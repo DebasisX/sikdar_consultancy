@@ -62,6 +62,14 @@ CREATE TABLE IF NOT EXISTS fee_payments (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS fee_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    fee_id      INTEGER NOT NULL REFERENCES fees(id) ON DELETE CASCADE,
+    category    TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    amount      REAL NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS activity (
     id   INTEGER PRIMARY KEY AUTOINCREMENT,
     ts   TEXT NOT NULL,
@@ -241,13 +249,18 @@ class Database:
 
     def add_fee(self, client_id: int, fy: str, description: str,
                 billed: float, received: float, date: str,
-                mode: str = "Cash", note: str = "") -> int:
+                mode: str = "Cash", note: str = "",
+                items: list[tuple[str, str, float]] | None = None) -> int:
         ts = now_iso()
         cur = self.conn.execute(
             "INSERT INTO fees(client_id,fy,description,billed,received,date,created_at) "
             "VALUES(?,?,?,?,?,?,?)",
             (client_id, fy, description, billed, received, date, ts))
         fid = int(cur.lastrowid)
+        if items:
+            self.conn.executemany(
+                "INSERT INTO fee_items(fee_id,category,description,amount) VALUES(?,?,?,?)",
+                [(fid, cat, desc, amt) for cat, desc, amt in items])
         if received > 0:
             self.conn.execute(
                 "INSERT INTO fee_payments(fee_id,amount,date,mode,note,created_at) "
@@ -257,11 +270,23 @@ class Database:
         return fid
 
     def update_fee(self, fee_id: int, client_id: int, fy: str, description: str,
-                   billed: float, received: float, date: str) -> None:
+                   billed: float, received: float, date: str,
+                   items: list[tuple[str, str, float]] | None = None) -> None:
         self.conn.execute(
             "UPDATE fees SET client_id=?, fy=?, description=?, billed=?, received=?, date=? "
             "WHERE id=?", (client_id, fy, description, billed, received, date, fee_id))
+        if items is not None:
+            self.conn.execute("DELETE FROM fee_items WHERE fee_id=?", (fee_id,))
+            if items:
+                self.conn.executemany(
+                    "INSERT INTO fee_items(fee_id,category,description,amount) VALUES(?,?,?,?)",
+                    [(fee_id, cat, desc, amt) for cat, desc, amt in items])
         self.conn.commit()
+
+    def list_fee_items(self, fee_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM fee_items WHERE fee_id=? ORDER BY id ASC",
+            (fee_id,)).fetchall()
 
     def record_payment(self, fee_id: int, amount: float, pay_date: str,
                        mode: str = "Cash", note: str = "") -> int:

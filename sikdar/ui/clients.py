@@ -121,25 +121,30 @@ class ClientDialog(BaseDialog):
         gp = QGridLayout()
         gp.setHorizontalSpacing(16)
         gp.setVerticalSpacing(12)
+        self.itr_id_preview = QLineEdit()
+        self.itr_id_preview.setReadOnly(True)
+        self.itr_id_preview.setPlaceholderText("Auto-filled from PAN above")
         self.portal_pw = PasswordEdit("ITR portal password (optional)")
         self.gst_id = QLineEdit()
         self.gst_id.setPlaceholderText("GST username / GSTIN (optional)")
         self.gst_pw = PasswordEdit("GST portal password (optional)")
-        self.f_portal = Field(
-            "Income Tax (ITR) password", self.portal_pw,
-            hint="ITR User ID is the client's PAN.",
-        )
+
+        self.f_itr_id = Field("Income Tax (ITR) User ID", self.itr_id_preview)
+        self.f_portal = Field("Income Tax (ITR) password", self.portal_pw)
         self.f_gst_id = Field("GST (GSTR) User ID", self.gst_id)
-        self.f_gst_pw = Field(
-            "GST (GSTR) password", self.gst_pw,
-            hint="Both passwords are stored encrypted on this PC.",
-        )
-        gp.addWidget(self.f_portal, 0, 0)
-        gp.addWidget(self.f_gst_id, 0, 1)
-        gp.addWidget(self.f_gst_pw, 1, 1)
+        self.f_gst_pw = Field("GST (GSTR) password", self.gst_pw)
+
+        gp.addWidget(self.f_itr_id, 0, 0, Qt.AlignTop)
+        gp.addWidget(self.f_gst_id, 0, 1, Qt.AlignTop)
+        gp.addWidget(self.f_portal, 1, 0, Qt.AlignTop)
+        gp.addWidget(self.f_gst_pw, 1, 1, Qt.AlignTop)
         gp.setColumnStretch(0, 1)
         gp.setColumnStretch(1, 1)
         form.addLayout(gp)
+        form.addWidget(label(
+            "ITR User ID automatically uses the client's PAN. Both passwords are stored encrypted on this PC.",
+            "muted", wrap=True,
+        ))
 
         form.addWidget(self._divider())
         g3 = QGridLayout()
@@ -172,6 +177,7 @@ class ClientDialog(BaseDialog):
         outer.addWidget(foot)
 
         self.pan.textEdited.connect(lambda t: self._set_upper(self.pan, t))
+        self.pan.textChanged.connect(lambda t: self.itr_id_preview.setText(t.strip().upper()))
         self.aadhar.textEdited.connect(self._fmt_aadhar)
 
         if client:

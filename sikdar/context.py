@@ -395,11 +395,11 @@ class AppContext:
         if not self.verify_owner_password(password):
             raise AuthError("Incorrect owner password.")
         # Delete all client-related DB tables
-        for tbl in ("fee_payments", "fees", "tasks", "clients",
+        for tbl in ("fee_items", "fee_payments", "fees", "tasks", "clients",
                     "statutory_overrides", "statutory_custom", "activity"):
             self.db.conn.execute(f"DELETE FROM {tbl}")
         self.db.conn.execute("DELETE FROM sqlite_sequence WHERE name IN "
-                             "('fee_payments','fees','tasks','clients','statutory_custom','activity')")
+                             "('fee_items','fee_payments','fees','tasks','clients','statutory_custom','activity')")
         self.db.conn.commit()
         # Move client folders, photos, and generated bills/receipts to Recycle Bin
         for folder in (paths.clients_dir(), paths.photos_dir(), paths.bills_dir()):

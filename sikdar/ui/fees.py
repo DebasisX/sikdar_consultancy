@@ -1,4 +1,4 @@
-"""Fees & payments tracker with visible money inputs, old-dues tracking & PDF bills/receipts."""
+"""Fees & payments tracker with multi-item bill breakdown, partial-pay UX & unified PDF bills."""
 from __future__ import annotations
 
 from datetime import date
@@ -7,8 +7,8 @@ from pathlib import Path
 from PySide6.QtCore import QDate, QLocale, Qt, Signal
 from PySide6.QtGui import QColor, QDoubleValidator
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog, QFrame, QGridLayout,
-    QHeaderView, QLabel, QLineEdit, QMenu, QTableWidget, QTableWidgetItem, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
+    QHeaderView, QLabel, QLineEdit, QMenu, QScrollArea, QTableWidget, QTableWidgetItem, QWidget,
 )
 
 from .. import deadlines, paths, pdf_bill, storage, validators
@@ -20,15 +20,42 @@ from .widgets import (
 )
 
 PAY_MODES = ["UPI", "Cash", "Bank Transfer", "Cheque", "Card"]
+SERVICE_OPTIONS = [
+    "ITR Filing",
+    "Computation",
+    "GST Filing",
+    "Tax Audit",
+    "TDS Return",
+    "Notice / Scrutiny",
+    "PAN / DSC",
+    "Consultation",
+    "Accounting",
+    "Other",
+]
+
+
+def summarize_items(items: list[tuple[str, str, float]]) -> str:
+    """Create a concise single-line summary for the Fees table from itemized entries."""
+    if not items:
+        return ""
+    if len(items) == 1:
+        cat, desc, _ = items[0]
+        if cat and desc:
+            return f"{cat} — {desc}"
+        return desc or cat
+    parts = [cat or desc for cat, desc, _ in items]
+    if len(parts) <= 3:
+        return ", ".join(parts)
+    return f"{', '.join(parts[:2])} +{len(parts) - 2} more"
 
 
 class MoneyEdit(QLineEdit):
-    """Crisp, always-visible numeric currency input (replaces cramped QDoubleSpinBox)."""
+    """Crisp, always-visible numeric currency input."""
 
-    def __init__(self, placeholder: str = "0", parent=None):
+    def __init__(self, placeholder: str = "0", height: int = 42, parent=None):
         super().__init__(parent)
         self.setPlaceholderText(placeholder)
-        self.setMinimumHeight(42)
+        self.setMinimumHeight(height)
         self.setStyleSheet("font-size: 14px; font-weight: 600;")
         v = QDoubleValidator(0.0, 99_999_999.99, 2, self)
         v.setNotation(QDoubleValidator.StandardNotation)
@@ -53,8 +80,51 @@ class MoneyEdit(QLineEdit):
             self.setText(f"{val:.2f}")
 
 
+class BillItemRow(QWidget):
+    """One line item inside FeeDialog: Service dropdown + Description + Amount + Remove."""
+
+    changed = Signal()
+    remove_clicked = Signal(object)
+
+    def __init__(self, category: str = "ITR Filing", description: str = "", amount: float = 0.0):
+        super().__init__()
+        lay = hbox(self, (0, 2, 0, 2), 10)
+
+        self.cat = QComboBox()
+        self.cat.setEditable(True)
+        self.cat.addItems(SERVICE_OPTIONS)
+        self.cat.setCurrentText(category or "ITR Filing")
+        self.cat.setFixedWidth(158)
+        self.cat.setMinimumHeight(40)
+
+        self.desc = QLineEdit(description)
+        self.desc.setPlaceholderText("Item details (e.g. ITR-2 with Capital Gains)")
+        self.desc.setMinimumHeight(40)
+
+        self.amt = MoneyEdit("0", height=40)
+        self.amt.setFixedWidth(122)
+        if amount > 0:
+            self.amt.set_amount(amount)
+
+        self.btn_rm = button("", "x", "ghost", small=True)
+        self.btn_rm.setFixedSize(32, 32)
+        self.btn_rm.setToolTip("Remove item")
+        self.btn_rm.clicked.connect(lambda: self.remove_clicked.emit(self))
+
+        lay.addWidget(self.cat)
+        lay.addWidget(self.desc, 1)
+        lay.addWidget(self.amt)
+        lay.addWidget(self.btn_rm)
+
+        self.amt.textChanged.connect(self.changed.emit)
+        self.cat.currentTextChanged.connect(self.changed.emit)
+
+    def values(self) -> tuple[str, str, float]:
+        return (self.cat.currentText().strip() or "Service", self.desc.text().strip(), self.amt.amount())
+
+
 class PdfReadyDialog(BaseDialog):
-    """Shown right after generating a Bill or Receipt PDF so the user can view or share it."""
+    """Shown right after generating a PDF so the user can view or email it in one click."""
 
     def __init__(self, parent, title: str, pdf_path: Path, client_name: str = "",
                  client_email: str = "", firm_name: str = ""):
@@ -112,12 +182,34 @@ class PdfReadyDialog(BaseDialog):
 
 
 class FeeDialog(BaseDialog):
+    """Create or edit a fee entry with multiple itemized breakdown rows billed together."""
+
     def __init__(self, parent, ctx: AppContext, fee=None, client_id: int | None = None):
-        super().__init__(parent, "Edit fee entry" if fee else "New fee entry", 540)
+        super().__init__(parent, "Edit fee entry" if fee else "New fee entry", 690)
         self.ctx = ctx
         self.fee = fee
-        lay = vbox(self, (26, 24, 26, 22), 14)
-        lay.addWidget(label("Edit fee entry" if fee else "New fee entry", "h2"))
+        self._item_rows: list[BillItemRow] = []
+        self._existing_recv = float(fee["received"]) if fee else 0.0
+        self.setMinimumHeight(620)
+        self.resize(720, 680)
+
+        outer = vbox(self)
+        head = QWidget()
+        hl = vbox(head, (26, 20, 26, 14), 2)
+        hl.addWidget(label("Edit fee entry" if fee else "New fee entry", "h2"))
+        hl.addWidget(label("Add one or more services — they will be combined into a single itemized bill.", "sub"))
+        outer.addWidget(head)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.viewport().setAutoFillBackground(False)
+        body = QWidget()
+        body.setObjectName("page")
+        scroll.setWidget(body)
+        outer.addWidget(scroll, 1)
+
+        lay = vbox(body, (26, 10, 26, 18), 14)
 
         self.client = QComboBox()
         for c in ctx.db.list_clients():
@@ -144,21 +236,58 @@ class FeeDialog(BaseDialog):
         self.fy.setEditable(True)
         self.fy.addItems(deadlines.fy_options())
         self.fy.setCurrentText(fee["fy"] if fee else deadlines.current_fy())
-        self.desc = QLineEdit(fee["description"] if fee else "")
-        self.desc.setPlaceholderText("e.g. ITR filing + computation")
+        self.date = clean_date_edit()
+        self.date.setDate(QDate.fromString(fee["date"], Qt.ISODate) if fee else QDate.currentDate())
 
-        self.billed = MoneyEdit("e.g. 5000")
+        lay.addWidget(Field("Client", self.client, True))
+        lay.addWidget(self.ledger_box)
+        r1 = hbox(spacing=14)
+        r1.addWidget(Field("Financial year", self.fy), 1)
+        r1.addWidget(Field("Bill date", self.date), 1)
+        lay.addLayout(r1)
+
+        # ---- Itemized Bill Breakdown box
+        items_box = QFrame()
+        items_box.setObjectName("itemsBox")
+        items_box.setStyleSheet(
+            "QFrame#itemsBox { background:#FFFFFF; border:1px solid #DFE3EA; border-radius:14px; }"
+        )
+        ibl = vbox(items_box, (16, 14, 16, 14), 10)
+        hdr = hbox(spacing=10)
+        h_svc = label("SERVICE / OPTION", "muted")
+        h_svc.setFixedWidth(158)
+        h_desc = label("DESCRIPTION", "muted")
+        h_amt = label("AMOUNT (₹)", "muted")
+        h_amt.setFixedWidth(122)
+        h_sp = QLabel()
+        h_sp.setFixedWidth(32)
+        hdr.addWidget(h_svc)
+        hdr.addWidget(h_desc, 1)
+        hdr.addWidget(h_amt)
+        hdr.addWidget(h_sp)
+        ibl.addLayout(hdr)
+
+        self.items_host = vbox(spacing=8)
+        ibl.addLayout(self.items_host)
+
+        self.items_err = label("", "error")
+        self.items_err.hide()
+        ibl.addWidget(self.items_err)
+
+        item_foot = hbox(spacing=10)
+        self.btn_add_item = button("Add item", "plus", small=True)
+        self.btn_add_item.clicked.connect(lambda: self._add_item_row())
+        item_foot.addWidget(self.btn_add_item)
+        item_foot.addStretch(1)
+        self.total_lbl = label("Total billed: ₹0", "h2")
+        item_foot.addWidget(self.total_lbl)
+        ibl.addLayout(item_foot)
+        lay.addWidget(items_box)
+
+        # ---- Payment inputs
         self.received = MoneyEdit("0")
         self.mode = QComboBox()
         self.mode.addItems(PAY_MODES)
-        self.date = clean_date_edit()
-        self.date.setDate(QDate.fromString(fee["date"], Qt.ISODate) if fee else QDate.currentDate())
-        self._existing_recv = float(fee["received"]) if fee else 0.0
-        if fee:
-            self.billed.set_amount(fee["billed"])
-            self.received.clear()  # In edit mode, enter ONLY additional instalment to add!
-
-        self.f_billed = Field("Billed amount (₹)", self.billed, True)
         if fee:
             self.f_recv = Field(
                 f"Add new instalment (₹)  ·  Already paid: {validators.inr(self._existing_recv)}",
@@ -166,44 +295,81 @@ class FeeDialog(BaseDialog):
             )
         else:
             self.f_recv = Field("Received now (₹)", self.received)
-
-        lay.addWidget(Field("Client", self.client, True))
-        lay.addWidget(self.ledger_box)
-        r1 = hbox(spacing=14)
-        r1.addWidget(Field("Financial year", self.fy), 1)
-        r1.addWidget(Field("Date", self.date), 1)
-        lay.addLayout(r1)
-        lay.addWidget(Field("Description", self.desc))
         r2 = hbox(spacing=14)
-        r2.addWidget(self.f_billed, 1)
         r2.addWidget(self.f_recv, 1)
+        r2.addWidget(Field("Payment mode", self.mode), 1)
         lay.addLayout(r2)
-        lay.addWidget(Field("Payment mode (if payment entered above)", self.mode))
 
         self.live_summary = label("", "sub")
         lay.addWidget(self.live_summary)
 
-        self.gen_pdf = QCheckBox("Generate Bill / Receipt PDF after saving")
+        self.gen_pdf = QCheckBox("Generate PDF Bill / Receipt after saving")
         self.gen_pdf.setChecked(False)
         lay.addWidget(self.gen_pdf)
+        lay.addStretch(1)
 
-        foot = hbox(spacing=10)
-        foot.addStretch(1)
+        # ---- Footer
+        foot_bar = QWidget()
+        fl = hbox(foot_bar, (26, 12, 26, 18), 10)
+        fl.addStretch(1)
         c = button("Cancel")
         c.clicked.connect(self.reject)
-        ok = button("Save", kind="primary")
+        ok = button("Save bill", "check", "primary")
         ok.setDefault(True)
         ok.clicked.connect(self._ok)
-        foot.addWidget(c)
-        foot.addWidget(ok)
-        lay.addSpacing(4)
-        lay.addLayout(foot)
+        fl.addWidget(c)
+        fl.addWidget(ok)
+        outer.addWidget(foot_bar)
+
+        # Load existing items (or start with 1 row)
+        if fee:
+            existing_items = ctx.db.list_fee_items(fee["id"])
+            if existing_items:
+                for it in existing_items:
+                    self._add_item_row(it["category"], it["description"], float(it["amount"]))
+            else:
+                self._add_item_row("ITR Filing", fee["description"], float(fee["billed"]))
+        else:
+            self._add_item_row("ITR Filing", "", 0.0)
 
         self.has_client = self.client.count() > 0
         self.client.currentIndexChanged.connect(self._refresh_ledger)
-        self.billed.textChanged.connect(self._refresh_live)
         self.received.textChanged.connect(self._refresh_live)
         self._refresh_ledger()
+
+    def _add_item_row(self, category: str = "ITR Filing", description: str = "", amount: float = 0.0) -> None:
+        row = BillItemRow(category, description, amount)
+        row.changed.connect(self._refresh_live)
+        row.remove_clicked.connect(self._remove_item_row)
+        self._item_rows.append(row)
+        self.items_host.addWidget(row)
+        self._sync_remove_buttons()
+        self._refresh_live()
+
+    def _remove_item_row(self, row: BillItemRow) -> None:
+        if len(self._item_rows) <= 1:
+            return
+        self._item_rows.remove(row)
+        self.items_host.removeWidget(row)
+        row.hide()
+        row.setParent(None)
+        row.deleteLater()
+        self._sync_remove_buttons()
+        self._refresh_live()
+
+    def _sync_remove_buttons(self) -> None:
+        can_rm = len(self._item_rows) > 1
+        for r in self._item_rows:
+            r.btn_rm.setEnabled(can_rm)
+
+    def _items_data(self) -> list[tuple[str, str, float]]:
+        return [r.values() for r in self._item_rows if r.values()[2] > 0 or r.values()[1]]
+
+    def _total_billed(self) -> float:
+        return round(sum(r.amt.amount() for r in self._item_rows), 2)
+
+    def _total_received(self) -> float:
+        return round(self._existing_recv + self.received.amount(), 2) if self.fee else self.received.amount()
 
     def _refresh_ledger(self) -> None:
         cid = self.client.currentData()
@@ -213,8 +379,8 @@ class FeeDialog(BaseDialog):
         exclude = self.fee["id"] if self.fee else None
         old_billed, old_recv, old_bal = self.ctx.db.client_fee_summary(cid, exclude_fee_id=exclude)
         self._old_bal = old_bal
+        self.ledger_box.show()
         if old_billed > 0:
-            self.ledger_box.show()
             if old_bal > 0.004:
                 self.ledger_title.setText(f"Previous unpaid balance (Old Dues):  {validators.inr(old_bal)}")
             else:
@@ -223,44 +389,53 @@ class FeeDialog(BaseDialog):
                 f"Earlier bills: {validators.inr(old_billed)}   ·   Earlier paid: {validators.inr(old_recv)}"
             )
         else:
-            self.ledger_box.show()
             self.ledger_title.setText("Previous balance:  ₹0")
             self.ledger_sub.setText("No earlier fee entries for this client.")
         self._refresh_live()
 
-    def _total_received(self) -> float:
-        return round(self._existing_recv + self.received.amount(), 2) if self.fee else self.received.amount()
-
     def _refresh_live(self) -> None:
-        b = self.billed.amount()
+        b = self._total_billed()
         r = self._total_received()
         bal = round(b - r, 2)
         old = getattr(self, "_old_bal", 0.0)
         total = round(bal + max(old, 0.0), 2)
+        self.total_lbl.setText(f"Total billed: {validators.inr(b)}")
         parts = [f"Total paid on this bill: {validators.inr(r)}", f"Remaining: {validators.inr(bal)}"]
         if old > 0.004:
             parts.append(f"Total with old dues: {validators.inr(total)}")
         self.live_summary.setText("   ·   ".join(parts))
 
     def _ok(self) -> None:
-        if self.client.currentData() is None:
-            self.f_billed.set_error("Register a client first")
-            return
-        b, r = self.billed.amount(), self._total_received()
-        self.f_billed.set_error("")
+        self.items_err.hide()
         self.f_recv.set_error("")
-        if b <= 0:
-            self.f_billed.set_error("Enter the billed amount")
+        if self.client.currentData() is None:
+            self.items_err.setText("Register a client first.")
+            self.items_err.show()
             return
+        items = [r.values() for r in self._item_rows if r.values()[2] > 0]
+        if not items:
+            self.items_err.setText("Enter an amount greater than ₹0 for at least one bill item.")
+            self.items_err.show()
+            return
+        b = round(sum(amt for _, _, amt in items), 2)
+        r = self._total_received()
         if r > b + 0.004:
             self.f_recv.set_error(f"Exceeds remaining balance ({validators.inr(max(b - self._existing_recv, 0))})")
             return
         self.accept()
 
+    def items(self) -> list[tuple[str, str, float]]:
+        return [r.values() for r in self._item_rows if r.values()[2] > 0]
+
     def values(self):
+        its = self.items()
+        billed = round(sum(amt for _, _, amt in its), 2)
         return (
-            self.client.currentData(), self.fy.currentText().strip(),
-            self.desc.text().strip(), self.billed.amount(), self._total_received(),
+            self.client.currentData(),
+            self.fy.currentText().strip(),
+            summarize_items(its),
+            billed,
+            self._total_received(),
             self.date.date().toString(Qt.ISODate),
         )
 
@@ -272,13 +447,13 @@ class FeeDialog(BaseDialog):
 
 
 class RecordPaymentDialog(BaseDialog):
-    """Record a payment with date, mode, note, and optional instant PDF Receipt."""
+    """Record a payment with date, mode, note, and optional instant PDF."""
 
     def __init__(self, parent, ctx: AppContext, fee_row):
         super().__init__(parent, "Record payment", 480)
         self.fee = fee_row
         bal = round(float(fee_row["billed"]) - float(fee_row["received"]), 2)
-        _, old_recv, total_client_bal = ctx.db.client_fee_summary(fee_row["client_id"])
+        _, _, total_client_bal = ctx.db.client_fee_summary(fee_row["client_id"])
         self._bal = bal
 
         lay = vbox(self, (26, 24, 26, 22), 14)
@@ -301,7 +476,6 @@ class RecordPaymentDialog(BaseDialog):
         self.amount.set_amount(bal)
         self.f_amt = Field("New payment received (₹)", self.amount, True)
 
-        # Quick-pick chips so settling full or partial balance is 1 click
         qrow = hbox(spacing=8)
         b_full = button(f"Full balance ({validators.inr(bal)})", kind="pay", small=True)
         b_full.clicked.connect(lambda: self.amount.set_amount(bal))
@@ -322,7 +496,7 @@ class RecordPaymentDialog(BaseDialog):
         self.mode.addItems(PAY_MODES)
         self.note = QLineEdit()
         self.note.setPlaceholderText("e.g. UPI Ref / Cheque No. / Remarks")
-        self.gen_receipt = QCheckBox("Generate PDF Receipt after recording")
+        self.gen_receipt = QCheckBox("Generate PDF Bill / Receipt after recording")
         self.gen_receipt.setChecked(True)
 
         lay.addWidget(self.f_amt)
@@ -379,19 +553,16 @@ class FeesPage(QWidget):
         self.setObjectName("page")
         self.ctx = ctx
         lay = vbox(self, (36, 30, 36, 28), 20)
-        self.header = PageHeader("Fees & payments", "Track billing, record payments and generate PDF bills & receipts.")
+        self.header = PageHeader("Fees & payments", "Create itemized bills, record instalments and share clean PDF bills.")
         b_dir = button("Bills folder", "folder-open")
         b_dir.setToolTip("Open the Bills & Receipts folder to share PDFs")
         b_dir.clicked.connect(lambda: storage.reveal(paths.bills_dir()))
-        b_bill = button("Bill PDF", "file-text")
-        b_bill.setToolTip("Generate minimalist PDF Bill for selected entry")
-        b_bill.clicked.connect(lambda: self._pdf_selected("bill"))
-        b_rcpt = button("Receipt PDF", "download")
-        b_rcpt.setToolTip("Generate minimalist PDF Payment Receipt for selected entry")
-        b_rcpt.clicked.connect(lambda: self._pdf_selected("receipt"))
+        b_pdf = button("Download PDF", "file-text")
+        b_pdf.setToolTip("Generate minimalist itemized PDF Bill / Receipt for selected entry")
+        b_pdf.clicked.connect(self._pdf_selected)
         b = button("New fee entry", "plus", "primary")
         b.clicked.connect(lambda: self.add_fee())
-        for btn in (b_dir, b_bill, b_rcpt, b):
+        for btn in (b_dir, b_pdf, b):
             self.header.add_action(btn)
         lay.addWidget(self.header)
 
@@ -428,7 +599,7 @@ class FeesPage(QWidget):
         pl = vbox(self.panel, (10, 6, 10, 10))
         self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels(
-            ["Date", "Client", "FY", "Description", "Billed", "Received", "Balance", "Status", "Action"])
+            ["Date", "Client", "FY", "Particulars", "Billed", "Received", "Balance", "Status", "Action"])
         t = self.table
         left_headers(t)
         t.verticalHeader().setVisible(False)
@@ -451,7 +622,7 @@ class FeesPage(QWidget):
         hh.setSectionResizeMode(7, QHeaderView.Fixed)
         t.setColumnWidth(7, 86)
         hh.setSectionResizeMode(8, QHeaderView.Fixed)
-        t.setColumnWidth(8, 128)
+        t.setColumnWidth(8, 118)
         t.setContextMenuPolicy(Qt.CustomContextMenu)
         t.customContextMenuRequested.connect(self._menu)
         t.cellDoubleClicked.connect(lambda r, c: self.edit_fee(r) if c != 8 else None)
@@ -460,7 +631,7 @@ class FeesPage(QWidget):
         pl.addWidget(self.empty, 1)
         lay.addWidget(self.panel, 1)
         lay.addWidget(label(
-            "Tip: click '+ Pay' on any Pending/Partial row to add an instalment in one click, or right-click for more.",
+            "Tip: click '+ Pay' to record an instalment, 'PDF' to download/email the itemized bill, or double-click to edit items.",
             "muted"))
 
     def refresh(self) -> None:
@@ -514,7 +685,16 @@ class FeesPage(QWidget):
             nm.setFont(font)
             self.table.setItem(r, 1, nm)
             self.table.setItem(r, 2, QTableWidgetItem(f["fy"] or "-"))
-            self.table.setItem(r, 3, QTableWidgetItem(f["description"] or "-"))
+            desc_item = QTableWidgetItem(f["description"] or "-")
+            its = self.ctx.db.list_fee_items(f["id"])
+            if len(its) > 1:
+                tip = "\n".join(
+                    f"• {it['category']}" + (f" ({it['description']})" if it["description"] else "")
+                    + f": {validators.inr(it['amount'])}"
+                    for it in its
+                )
+                desc_item.setToolTip(tip)
+            self.table.setItem(r, 3, desc_item)
             for col, val in ((4, f["billed"]), (5, f["received"]), (6, bal)):
                 it = QTableWidgetItem(validators.inr(val))
                 it.setTextAlignment(R)
@@ -531,21 +711,21 @@ class FeesPage(QWidget):
             s.setForeground(QColor(colr))
             self.table.setItem(r, 7, s)
 
-            # Inline 1-click Action button: '+ Pay' for Pending/Partial, 'Receipt' for Paid
+            # Inline 1-click Action button: '+ Pay' for Pending/Partial, 'PDF' for Paid
             aw = QWidget()
             al = hbox(aw, (4, 0, 6, 0), 0)
             fid = f["id"]
             if bal > 0.004:
                 bp = button("+ Pay", kind="pay", small=True)
-                bp.setMinimumWidth(82)
+                bp.setMinimumWidth(84)
                 bp.setToolTip("Record next instalment without retyping already-paid amount")
                 bp.clicked.connect(lambda _=False, x=fid: self._pay_by_id(x))
                 al.addWidget(bp, 0, Qt.AlignVCenter | Qt.AlignRight)
             else:
-                br = button("Receipt", "file-text", small=True)
-                br.setMinimumWidth(96)
-                br.setToolTip("Generate / email Payment Receipt PDF")
-                br.clicked.connect(lambda _=False, x=fid: self.generate_pdf_for(x, "receipt"))
+                br = button("PDF", "file-text", small=True)
+                br.setMinimumWidth(84)
+                br.setToolTip("Generate / email itemized PDF Bill & Receipt")
+                br.clicked.connect(lambda _=False, x=fid: self.generate_pdf_for(x))
                 al.addWidget(br, 0, Qt.AlignVCenter | Qt.AlignRight)
             self.table.setCellWidget(r, 8, aw)
         self.table.setVisible(bool(rows))
@@ -554,35 +734,34 @@ class FeesPage(QWidget):
     def _fid(self, row: int) -> int:
         return self.table.item(row, 0).data(Qt.UserRole)
 
-    def _pdf_selected(self, kind: str) -> None:
+    def _pdf_selected(self) -> None:
         r = self.table.currentRow()
         if r < 0:
             self.toast.emit("Select a fee entry from the table first", "error")
             return
-        self.generate_pdf_for(self._fid(r), kind)
+        self.generate_pdf_for(self._fid(r))
 
-    def generate_pdf_for(self, fee_id: int, kind: str) -> None:
+    def generate_pdf_for(self, fee_id: int) -> None:
         f = self.ctx.db.get_fee(fee_id)
         if not f:
             return
-        if kind == "receipt" and float(f["received"]) <= 0:
-            self.toast.emit("No payment received yet for this entry — use Bill PDF instead", "error")
-            return
         _, _, prev_bal = self.ctx.db.client_fee_summary(f["client_id"], exclude_fee_id=fee_id)
         payments = self.ctx.db.list_payments(fee_id)
-        dest = pdf_bill.suggested_filename(kind, f)
+        items = self.ctx.db.list_fee_items(fee_id)
+        dest = pdf_bill.suggested_filename(f)
         try:
             pdf_bill.generate_pdf(
-                dest, kind, self.ctx.firm_name(), f, payments, prev_bal,
+                dest, self.ctx.firm_name(), f, payments, prev_bal,
                 signature_path=self.ctx.signature_path(),
+                items=items,
             )
         except OSError as e:
             self.toast.emit(f"Could not create PDF: {e}", "error")
             return
-        label_kind = "Receipt PDF" if kind == "receipt" else "Bill PDF"
-        self.ctx.db.log(f"Generated {label_kind} for {f['client_name']} ({dest.name})")
+        doc_title, _ = pdf_bill._auto_mode(f)
+        self.ctx.db.log(f"Generated {doc_title.title()} PDF for {f['client_name']} ({dest.name})")
         PdfReadyDialog(
-            self.window(), f"{label_kind} generated", dest,
+            self.window(), f"{doc_title.title()} PDF ready", dest,
             client_name=f["client_name"],
             client_email=f["client_email"] or "",
             firm_name=self.ctx.firm_name(),
@@ -600,23 +779,25 @@ class FeesPage(QWidget):
             return
         if d.exec() == QDialog.Accepted:
             cid, fy, desc, billed, recv, dt = d.values()
-            fid = self.ctx.db.add_fee(cid, fy, desc, billed, recv, dt, mode=d.payment_mode())
-            self.ctx.db.log(f"Fee entry {validators.inr(billed)} added")
+            fid = self.ctx.db.add_fee(
+                cid, fy, desc, billed, recv, dt,
+                mode=d.payment_mode(), items=d.items(),
+            )
+            self.ctx.db.log(f"Fee entry {validators.inr(billed)} ({len(d.items())} items) added")
             self.refresh()
             self.data_changed.emit()
             self.toast.emit("Fee entry added", "success")
             if d.gen_pdf.isChecked():
-                self.generate_pdf_for(fid, "receipt" if recv > 0 and recv >= billed else "bill")
+                self.generate_pdf_for(fid)
 
     def edit_fee(self, row: int) -> None:
         f = self.ctx.db.get_fee(self._fid(row))
         if not f:
             return
-        old_recv = float(f["received"])
         d = FeeDialog(self.window(), self.ctx, f)
         if d.exec() == QDialog.Accepted:
             cid, fy, desc, billed, recv, dt = d.values()
-            self.ctx.db.update_fee(f["id"], cid, fy, desc, billed, recv, dt)
+            self.ctx.db.update_fee(f["id"], cid, fy, desc, billed, recv, dt, items=d.items())
             added = d.added_instalment()
             if added > 0.004:
                 self.ctx.db.conn.execute(
@@ -628,7 +809,7 @@ class FeesPage(QWidget):
             self.data_changed.emit()
             self.toast.emit("Fee entry updated", "success")
             if d.gen_pdf.isChecked():
-                self.generate_pdf_for(f["id"], "receipt" if recv > 0 and recv >= billed else "bill")
+                self.generate_pdf_for(f["id"])
 
     def _menu(self, pos) -> None:
         idx = self.table.indexAt(pos)
@@ -641,20 +822,15 @@ class FeesPage(QWidget):
         m = QMenu(self)
         a_pay = m.addAction(icons.icon("rupee", theme.TEXT_2, 16), "Record payment")
         a_pay.setEnabled(f["billed"] - f["received"] > 0.004)
+        a_pdf = m.addAction(icons.icon("file-text", theme.TEXT_2, 16), "Download PDF (Bill / Receipt)")
         m.addSeparator()
-        a_bill = m.addAction(icons.icon("file-text", theme.TEXT_2, 16), "Generate Bill PDF")
-        a_rcpt = m.addAction(icons.icon("download", theme.TEXT_2, 16), "Generate Receipt PDF")
-        a_rcpt.setEnabled(float(f["received"]) > 0)
-        m.addSeparator()
-        a_edit = m.addAction(icons.icon("edit", theme.TEXT_2, 16), "Edit")
+        a_edit = m.addAction(icons.icon("edit", theme.TEXT_2, 16), "Edit items & details")
         a_del = m.addAction(icons.icon("trash", theme.DANGER, 16), "Delete")
         act = m.exec(self.table.viewport().mapToGlobal(pos))
         if act == a_pay:
             self._record_payment(f)
-        elif act == a_bill:
-            self.generate_pdf_for(f["id"], "bill")
-        elif act == a_rcpt:
-            self.generate_pdf_for(f["id"], "receipt")
+        elif act == a_pdf:
+            self.generate_pdf_for(f["id"])
         elif act == a_edit:
             self.edit_fee(idx.row())
         elif act == a_del:
@@ -674,4 +850,4 @@ class FeesPage(QWidget):
         self.data_changed.emit()
         self.toast.emit(f"Recorded {validators.inr(amt)}", "success")
         if d.gen_receipt.isChecked():
-            self.generate_pdf_for(f["id"], "receipt")
+            self.generate_pdf_for(f["id"])
