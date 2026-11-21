@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS clients (
     address          TEXT NOT NULL DEFAULT '',
     photo            TEXT NOT NULL DEFAULT '',
     portal_password  TEXT NOT NULL DEFAULT '',
+    gst_id           TEXT NOT NULL DEFAULT '',
+    gst_password     TEXT NOT NULL DEFAULT '',
     folder_name      TEXT NOT NULL,
     status           TEXT NOT NULL DEFAULT 'Active',
     notes            TEXT NOT NULL DEFAULT '',
@@ -72,11 +74,20 @@ CREATE TABLE IF NOT EXISTS statutory_overrides (
     title    TEXT NOT NULL DEFAULT '',
     note     TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS statutory_custom (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT NOT NULL,
+    due_date   TEXT NOT NULL,
+    kind       TEXT NOT NULL DEFAULT 'ITR',
+    note       TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
 """
 
 CLIENT_FIELDS = (
     "name", "phone", "email", "aadhar", "pan", "dob", "address", "photo",
-    "portal_password", "folder_name", "status", "notes",
+    "portal_password", "gst_id", "gst_password", "folder_name", "status", "notes",
 )
 
 
@@ -91,7 +102,15 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(clients)").fetchall()}
+        if "gst_id" not in cols:
+            self.conn.execute("ALTER TABLE clients ADD COLUMN gst_id TEXT NOT NULL DEFAULT ''")
+        if "gst_password" not in cols:
+            self.conn.execute("ALTER TABLE clients ADD COLUMN gst_password TEXT NOT NULL DEFAULT ''")
 
     def close(self) -> None:
         try:
@@ -128,8 +147,8 @@ class Database:
         if search.strip():
             like = f"%{search.strip()}%"
             sql += (" AND (name LIKE ? OR pan LIKE ? OR phone LIKE ? OR email LIKE ? "
-                    "OR aadhar LIKE ?)")
-            params += [like] * 5
+                    "OR aadhar LIKE ? OR gst_id LIKE ?)")
+            params += [like] * 6
         sql += " ORDER BY name COLLATE NOCASE"
         return self.conn.execute(sql, params).fetchall()
 
@@ -320,4 +339,28 @@ class Database:
 
     def clear_statutory_override(self, key: str) -> None:
         self.conn.execute("DELETE FROM statutory_overrides WHERE key=?", (key,))
+        self.conn.commit()
+
+    # ------------------------------------------------- manual statutory dates
+    def list_custom_statutory(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM statutory_custom ORDER BY due_date, id").fetchall()
+
+    def add_custom_statutory(self, title: str, due_date: str,
+                             kind: str = "ITR", note: str = "") -> int:
+        cur = self.conn.execute(
+            "INSERT INTO statutory_custom(title,due_date,kind,note,created_at) VALUES(?,?,?,?,?)",
+            (title, due_date, kind, note, now_iso()))
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def update_custom_statutory(self, custom_id: int, title: str, due_date: str,
+                                kind: str = "ITR", note: str = "") -> None:
+        self.conn.execute(
+            "UPDATE statutory_custom SET title=?, due_date=?, kind=?, note=? WHERE id=?",
+            (title, due_date, kind, note, custom_id))
+        self.conn.commit()
+
+    def delete_custom_statutory(self, custom_id: int) -> None:
+        self.conn.execute("DELETE FROM statutory_custom WHERE id=?", (custom_id,))
         self.conn.commit()

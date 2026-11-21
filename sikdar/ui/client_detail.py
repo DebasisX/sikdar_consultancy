@@ -15,8 +15,8 @@ from ..context import AppContext
 from . import icons, theme
 from .clients import ClientDialog
 from .widgets import (
-    AvatarLabel, button, card, chip, confirm, divider, empty_state, hbox, label, left_headers,
-    prompt_text, vbox,
+    AvatarLabel, QuickShareDialog, button, card, chip, confirm, divider, empty_state, hbox, label,
+    left_headers, prompt_text, vbox,
 )
 
 
@@ -85,6 +85,7 @@ class ClientDetailPage(QWidget):
         self.client = None
         self.current_folder: str | None = None
         self._pw_shown = False
+        self._gst_pw_shown = False
         self._aadhar_shown = False
 
         outer = vbox(self, (36, 30, 36, 28), 18)
@@ -139,18 +140,18 @@ class ClientDetailPage(QWidget):
         pl.addLayout(self.info_host)
         ll.addWidget(self.profile)
 
-        # portal credentials
+        # portal credentials (ITR + GST)
         self.portal = card()
         cl = vbox(self.portal, (22, 20, 22, 20), 10)
         hd = hbox(spacing=8)
         ic = QLabel()
-        ic.setPixmap(icons.pixmap("shield", theme.BRAND, 18))
+        ic.setPixmap(icons.pixmap("shield", "#2563EB", 18))
         hd.addWidget(ic)
-        hd.addWidget(label("Income Tax portal login", "h3"))
+        hd.addWidget(label("Income Tax (ITR) portal", "h3"))
         hd.addStretch(1)
         cl.addLayout(hd)
         cl.addWidget(label("incometax.gov.in e-filing", "muted"))
-        cl.addSpacing(4)
+        cl.addSpacing(2)
         cl.addWidget(label("User ID (PAN)", "fieldLabel"))
         r1 = hbox(spacing=8)
         self.portal_id = label("", "h3")
@@ -158,7 +159,7 @@ class ClientDetailPage(QWidget):
         r1.addWidget(self.portal_id, 1)
         b = button("", "copy", "ghost", small=True)
         b.setToolTip("Copy PAN")
-        b.clicked.connect(lambda: self._copy(self.client["pan"], "PAN copied"))
+        b.clicked.connect(self._copy_pan)
         r1.addWidget(b)
         cl.addLayout(r1)
         cl.addWidget(label("Password", "fieldLabel"))
@@ -167,7 +168,7 @@ class ClientDetailPage(QWidget):
         self.portal_pw.setTextInteractionFlags(Qt.TextSelectableByMouse)
         r2.addWidget(self.portal_pw, 1)
         self.btn_reveal = button("", "eye", "ghost", small=True)
-        self.btn_reveal.setToolTip("Show / hide password")
+        self.btn_reveal.setToolTip("Show / hide ITR password")
         self.btn_reveal.clicked.connect(self._toggle_pw)
         r2.addWidget(self.btn_reveal)
         b2 = button("", "copy", "ghost", small=True)
@@ -175,11 +176,52 @@ class ClientDetailPage(QWidget):
         b2.clicked.connect(self._copy_pw)
         r2.addWidget(b2)
         cl.addLayout(r2)
-        cl.addSpacing(4)
-        b_portal = button("Open e-Filing Portal", "external-link", small=True)
+        b_portal = button("Open ITR Portal", "external-link", small=True)
         b_portal.clicked.connect(lambda: QDesktopServices.openUrl(
             QUrl("https://www.incometax.gov.in/iec/foportal/")))
         cl.addWidget(b_portal, 0, Qt.AlignLeft)
+
+        cl.addSpacing(6)
+        cl.addWidget(divider())
+        cl.addSpacing(6)
+
+        hd_g = hbox(spacing=8)
+        ic_g = QLabel()
+        ic_g.setPixmap(icons.pixmap("shield", "#0D9488", 18))
+        hd_g.addWidget(ic_g)
+        hd_g.addWidget(label("GST (GSTR) portal", "h3"))
+        hd_g.addStretch(1)
+        cl.addLayout(hd_g)
+        cl.addWidget(label("gst.gov.in filing portal", "muted"))
+        cl.addSpacing(2)
+        cl.addWidget(label("GST User ID", "fieldLabel"))
+        rg1 = hbox(spacing=8)
+        self.gst_id_lbl = label("", "h3")
+        self.gst_id_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        rg1.addWidget(self.gst_id_lbl, 1)
+        bg1 = button("", "copy", "ghost", small=True)
+        bg1.setToolTip("Copy GST User ID")
+        bg1.clicked.connect(self._copy_gst_id)
+        rg1.addWidget(bg1)
+        cl.addLayout(rg1)
+        cl.addWidget(label("Password", "fieldLabel"))
+        rg2 = hbox(spacing=8)
+        self.gst_pw_lbl = label("", "h3")
+        self.gst_pw_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        rg2.addWidget(self.gst_pw_lbl, 1)
+        self.btn_reveal_gst = button("", "eye", "ghost", small=True)
+        self.btn_reveal_gst.setToolTip("Show / hide GST password")
+        self.btn_reveal_gst.clicked.connect(self._toggle_gst_pw)
+        rg2.addWidget(self.btn_reveal_gst)
+        bg2 = button("", "copy", "ghost", small=True)
+        bg2.setToolTip("Copy GST password (clipboard clears after 30 s)")
+        bg2.clicked.connect(self._copy_gst_pw)
+        rg2.addWidget(bg2)
+        cl.addLayout(rg2)
+        b_gst = button("Open GST Portal", "external-link", small=True)
+        b_gst.clicked.connect(lambda: QDesktopServices.openUrl(
+            QUrl("https://services.gst.gov.in/services/login")))
+        cl.addWidget(b_gst, 0, Qt.AlignLeft)
         ll.addWidget(self.portal)
 
         # quick stats
@@ -260,15 +302,19 @@ class ClientDetailPage(QWidget):
         bar.addWidget(self.folder_title)
         bar.addWidget(self.folder_count)
         bar.addStretch(1)
+        self.btn_share_sel = button("Email selected", "mail", "share", small=True, icon_color="#1D4ED8")
+        self.btn_share_sel.setToolTip("Quick-share selected document(s) to this client's email")
+        self.btn_share_sel.clicked.connect(self._share_selected)
+        bar.addWidget(self.btn_share_sel)
         self.btn_upload = button("Upload files", "upload", "primary", small=True)
         self.btn_upload.clicked.connect(self._upload)
         bar.addWidget(self.btn_upload)
         fcl.addLayout(bar)
 
         self.files = DropTable(0, 4)
-        self.files.setHorizontalHeaderLabels(["Name", "Size", "Modified", ""])
+        self.files.setHorizontalHeaderLabels(["Name", "Size", "Modified", "Share"])
         self.files.verticalHeader().setVisible(False)
-        self.files.verticalHeader().setDefaultSectionSize(46)
+        self.files.verticalHeader().setDefaultSectionSize(48)
         self.files.setShowGrid(False)
         self.files.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.files.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -282,9 +328,9 @@ class ClientDetailPage(QWidget):
         hh.setSectionResizeMode(1, QHeaderView.Fixed)
         hh.setSectionResizeMode(2, QHeaderView.Fixed)
         hh.setSectionResizeMode(3, QHeaderView.Fixed)
-        self.files.setColumnWidth(1, 80)
-        self.files.setColumnWidth(2, 112)
-        self.files.setColumnWidth(3, 4)
+        self.files.setColumnWidth(1, 74)
+        self.files.setColumnWidth(2, 102)
+        self.files.setColumnWidth(3, 104)
         self.files.cellDoubleClicked.connect(lambda r, _c: self._open_file(r))
         self.files.customContextMenuRequested.connect(self._file_menu)
         self.files.files_dropped.connect(self._add_dropped)
@@ -305,6 +351,7 @@ class ClientDetailPage(QWidget):
     def load(self, cid: int, folder: str | None = None) -> None:
         self.cid = cid
         self._pw_shown = False
+        self._gst_pw_shown = False
         self._aadhar_shown = False
         self.reload_client()
         self.reload_folders(select=folder)
@@ -325,8 +372,11 @@ class ClientDetailPage(QWidget):
         except ValueError:
             self.since.setText("")
         self._fill_info()
-        self.portal_id.setText(c["pan"] or "-")
+        self.portal_id.setText(c["pan"] or "Not set")
         self._paint_pw()
+        gst_id = c["gst_id"] if "gst_id" in c.keys() else ""
+        self.gst_id_lbl.setText(gst_id or "Not set")
+        self._paint_gst_pw()
         billed = recv = 0.0
         for f in self.ctx.db.list_fees(c["id"]):
             billed += f["billed"]
@@ -411,13 +461,51 @@ class ClientDetailPage(QWidget):
         copy_text(text)
         self.toast.emit(msg, "success")
 
+    def _copy_pan(self) -> None:
+        pan = self.client["pan"] or ""
+        if not pan:
+            self.toast.emit("No PAN saved for this client", "error")
+            return
+        self._copy(pan, "PAN copied")
+
     def _copy_pw(self) -> None:
         pw = self.ctx.portal_password(self.client)
         if not pw:
-            self.toast.emit("No portal password saved for this client", "error")
+            self.toast.emit("No ITR portal password saved for this client", "error")
             return
         copy_text(pw, secret=True)
-        self.toast.emit("Password copied - clipboard clears in 30 s", "success")
+        self.toast.emit("ITR password copied - clipboard clears in 30 s", "success")
+
+    def _paint_gst_pw(self) -> None:
+        pw = self.ctx.gst_password(self.client)
+        if not pw:
+            self.gst_pw_lbl.setText("Not saved")
+            self.gst_pw_lbl.setStyleSheet(f"color:{theme.MUTED}; font-weight:500;")
+            self.btn_reveal_gst.setEnabled(False)
+            return
+        self.btn_reveal_gst.setEnabled(True)
+        self.gst_pw_lbl.setStyleSheet("")
+        self.gst_pw_lbl.setText(pw if self._gst_pw_shown else "•" * min(len(pw), 14))
+        self.btn_reveal_gst.setIcon(icons.icon("eye-off" if self._gst_pw_shown else "eye", theme.TEXT_2, 18))
+
+    def _toggle_gst_pw(self) -> None:
+        self._gst_pw_shown = not self._gst_pw_shown
+        self._paint_gst_pw()
+
+    def _copy_gst_id(self) -> None:
+        gid = self.client["gst_id"] if "gst_id" in self.client.keys() else ""
+        if not gid:
+            self.toast.emit("No GST User ID saved for this client", "error")
+            return
+        self._copy(gid, "GST User ID copied")
+
+    def _copy_gst_pw(self) -> None:
+        pw = self.ctx.gst_password(self.client)
+        if not pw:
+            self.toast.emit("No GST portal password saved for this client", "error")
+            return
+        copy_text(pw, secret=True)
+        self.toast.emit("GST password copied - clipboard clears in 30 s", "success")
 
     # ---------------------------------------------------------- client actions
     def _edit(self) -> None:
@@ -575,9 +663,18 @@ class ClientDetailPage(QWidget):
             self.files.setItem(r, 0, it)
             self.files.setItem(r, 1, QTableWidgetItem(storage.human_size(f.size)))
             self.files.setItem(r, 2, QTableWidgetItem(f.modified.strftime("%d %b %Y")))
-            self.files.setItem(r, 3, QTableWidgetItem(""))
+            # Quick share to client email button
+            sw = QWidget()
+            sl = hbox(sw, (4, 0, 6, 0), 0)
+            b_mail = button("Mail", "mail", "share", small=True)
+            b_mail.setMinimumWidth(76)
+            b_mail.setToolTip(f"Quick-share '{f.name}' to {self.client['email'] or 'client email'}")
+            b_mail.clicked.connect(lambda _=False, fp=f.path: self._share_files([fp]))
+            sl.addWidget(b_mail, 0, Qt.AlignCenter)
+            self.files.setCellWidget(r, 3, sw)
         self.files.setVisible(bool(items))
         self.drop_hint.setVisible(not items)
+        self.btn_share_sel.setEnabled(bool(items))
         # refresh count badge for this folder
         self._refresh_folder_badges()
 
@@ -627,6 +724,26 @@ class ClientDetailPage(QWidget):
         except OSError as e:
             self.toast.emit(f"Could not open file: {e}", "error")
 
+    def _share_selected(self) -> None:
+        from pathlib import Path
+        sel = self._selected_files()
+        if not sel:
+            self.toast.emit("Select one or more files first, or click Mail on a file row", "info")
+            return
+        self._share_files([Path(p) for p in sel])
+
+    def _share_files(self, file_paths: list) -> None:
+        d = QuickShareDialog(
+            self.window(),
+            self.client["name"],
+            self.client["email"] or "",
+            file_paths,
+            self.ctx.firm_name(),
+        )
+        if d.exec() == QDialog.Accepted:
+            self.ctx.db.log(f"Quick-shared {len(file_paths)} file(s) to {self.client['name']} via email")
+            self.toast.emit("Email opened & file(s) copied — press Ctrl+V to attach!", "success", 4000)
+
     def _file_menu(self, pos) -> None:
         idx = self.files.indexAt(pos)
         if not idx.isValid():
@@ -636,6 +753,7 @@ class ClientDetailPage(QWidget):
         sel = self._selected_files()
         m = QMenu(self)
         a_open = m.addAction(icons.icon("file", theme.TEXT_2, 16), "Open")
+        a_share = m.addAction(icons.icon("mail", "#2563EB", 16), "Share to client's email")
         a_show = m.addAction(icons.icon("folder-open", theme.TEXT_2, 16), "Show in Explorer")
         a_ren = m.addAction(icons.icon("edit", theme.TEXT_2, 16), "Rename")
         a_ren.setEnabled(len(sel) == 1)
@@ -646,6 +764,8 @@ class ClientDetailPage(QWidget):
         from pathlib import Path
         if act == a_open:
             self._open_file(idx.row())
+        elif act == a_share:
+            self._share_files([Path(p) for p in sel])
         elif act == a_show:
             storage.reveal(Path(sel[0]))
         elif act == a_ren:

@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QEasingCurve, QEvent, QObject, QParallelAnimationGroup, QPoint, QPropertyAnimation, QRectF, Qt,
+    QTimer, Signal,
+)
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QCalendarWidget, QComboBox, QDateEdit, QDialog, QFrame, QGraphicsDropShadowEffect,
@@ -20,6 +23,41 @@ _AVATAR_COLORS = ["#181A1F", "#2D3138", "#3F4550", "#525866", "#23262C", "#474D5
 def repolish(w: QWidget) -> None:
     w.style().unpolish(w)
     w.style().polish(w)
+
+
+class PopupPolishFilter(QObject):
+    """App-wide filter that removes rectangular native popup frames behind rounded dropdowns & menus."""
+
+    @staticmethod
+    def _make_clean_popup(w: QWidget) -> None:
+        if w.property("_sikdar_popup_clean"):
+            return
+        w.setProperty("_sikdar_popup_clean", True)
+        w.setWindowFlags(w.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        w.setAttribute(Qt.WA_TranslucentBackground, True)
+        if isinstance(w, QFrame) and not w.inherits("QMenu") and not w.inherits("QCalendarWidget"):
+            w.setFrameShape(QFrame.NoFrame)
+            cname = w.metaObject().className()
+            w.setStyleSheet(f"{cname} {{ background: transparent; border: none; }}")
+
+    def eventFilter(self, obj, ev) -> bool:
+        t = ev.type()
+        if t == QEvent.Polish and isinstance(obj, QComboBox):
+            popup = obj.view().window() if obj.view() else None
+            if popup is not None and popup is not obj.window():
+                self._make_clean_popup(popup)
+                if obj.view() is not None:
+                    obj.view().setFrameShape(QFrame.NoFrame)
+        elif t == QEvent.Polish and isinstance(obj, QWidget):
+            cname = obj.metaObject().className()
+            if cname in ("QComboBoxPrivateContainer", "QMenu", "QCalendarPopup"):
+                self._make_clean_popup(obj)
+        elif t == QEvent.Show and isinstance(obj, QWidget):
+            cname = obj.metaObject().className()
+            if cname in ("QComboBoxPrivateContainer", "QMenu", "QCalendarPopup"):
+                if not obj.property("_sikdar_popup_clean"):
+                    self._make_clean_popup(obj)
+        return False
 
 
 def left_headers(table) -> None:
@@ -129,9 +167,11 @@ def button(text: str = "", icon: str | None = None, kind: str = "secondary",
     if small:
         b.setProperty("size", "sm")
     if icon:
-        color = icon_color or {"primary": "#FFFFFF", "danger": theme.DANGER,
-                               "solidDanger": "#FFFFFF"}.get(kind, theme.TEXT_2)
-        b.setIcon(icons.icon(icon, color, 18))
+        color = icon_color or {
+            "primary": "#FFFFFF", "danger": theme.DANGER, "solidDanger": "#FFFFFF",
+            "done": "#047857", "pay": "#047857", "share": "#1D4ED8",
+        }.get(kind, theme.TEXT_2)
+        b.setIcon(icons.icon(icon, color, 14 if small else 17))
     return b
 
 
@@ -151,19 +191,20 @@ def chip(text: str, kind: str = "neutral") -> QLabel:
     return lb
 
 
-def shadow(w: QWidget, blur: int = 28, dy: int = 6, alpha: int = 22) -> None:
+def shadow(w: QWidget, blur: int = 38, dy: int = 10, alpha: int = 24) -> QGraphicsDropShadowEffect:
     eff = QGraphicsDropShadowEffect(w)
     eff.setBlurRadius(blur)
     eff.setOffset(0, dy)
     eff.setColor(QColor(15, 23, 42, alpha))
     w.setGraphicsEffect(eff)
+    return eff
 
 
 def card(shadowed: bool = True, flat: bool = False) -> QFrame:
     f = QFrame()
     f.setObjectName("cardFlat" if flat else "card")
     if shadowed:
-        shadow(f, 32, 6, 15)
+        shadow(f, 38, 10, 24)
     return f
 
 
@@ -316,7 +357,8 @@ class StatCard(QFrame):
         if clickable:
             self.setProperty("clickable", True)
             self.setCursor(Qt.PointingHandCursor)
-        shadow(self, 32, 6, 15)
+        self._shadow = shadow(self, 36, 9, 22)
+        self._hover_anim: QParallelAnimationGroup | None = None
         lay = hbox(self, (22, 20, 22, 20), 14)
         col = vbox(spacing=4)
         self.title = label(title, "sub")
@@ -332,6 +374,35 @@ class StatCard(QFrame):
         badge.setStyleSheet(f"background:{soft}; border-radius: 15px;")
         badge.setPixmap(icons.pixmap(icon_name, color, 22))
         lay.addWidget(badge, 0, Qt.AlignTop)
+
+    def _animate_elevation(self, hovered: bool) -> None:
+        if not self._clickable:
+            return
+        if self._hover_anim is not None:
+            self._hover_anim.stop()
+        grp = QParallelAnimationGroup(self)
+        a_blur = QPropertyAnimation(self._shadow, b"blurRadius", grp)
+        a_blur.setDuration(170)
+        a_blur.setStartValue(self._shadow.blurRadius())
+        a_blur.setEndValue(48.0 if hovered else 36.0)
+        a_blur.setEasingCurve(QEasingCurve.OutCubic)
+        a_y = QPropertyAnimation(self._shadow, b"yOffset", grp)
+        a_y.setDuration(170)
+        a_y.setStartValue(self._shadow.yOffset())
+        a_y.setEndValue(15.0 if hovered else 9.0)
+        a_y.setEasingCurve(QEasingCurve.OutCubic)
+        grp.addAnimation(a_blur)
+        grp.addAnimation(a_y)
+        self._hover_anim = grp
+        grp.start()
+
+    def enterEvent(self, event) -> None:
+        self._animate_elevation(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._animate_elevation(False)
+        super().leaveEvent(event)
 
     def set_clickable(self, enabled: bool = True, tooltip: str = "") -> None:
         self._clickable = enabled
@@ -355,7 +426,8 @@ class StatCard(QFrame):
 
 def empty_state(icon_name: str, title: str, text: str) -> QWidget:
     w = QWidget()
-    lay = vbox(w, (20, 40, 20, 40), 8)
+    w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    lay = vbox(w, (20, 44, 20, 44), 8)
     lay.setAlignment(Qt.AlignCenter)
     badge = QLabel()
     badge.setFixedSize(64, 64)
@@ -383,40 +455,57 @@ class Toast(QLabel):
         self._fx = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self._fx)
         self._anim = QPropertyAnimation(self._fx, b"opacity", self)
+        self._pos_anim = QPropertyAnimation(self, b"pos", self)
+        self._fading_out = False
+        self._anim.finished.connect(self._on_anim_done)
         self._timer = QTimer(self, singleShot=True)
         self._timer.timeout.connect(self._fade_out)
+
+    def _on_anim_done(self) -> None:
+        if self._fading_out:
+            self.hide()
 
     def show_message(self, text: str, kind: str = "info", ms: int = 2800) -> None:
         self.setProperty("kind", kind)
         repolish(self)
         self.setText(text)
         self.adjustSize()
-        self.reposition()
+        end_pt = self._target_pos()
+        start_pt = QPoint(end_pt.x(), end_pt.y() + 14)
+        self.move(start_pt)
         self.show()
         self.raise_()
+        self._fading_out = False
         self._anim.stop()
-        self._anim.setDuration(180)
+        self._pos_anim.stop()
+        self._anim.setDuration(200)
         self._anim.setStartValue(0.0)
         self._anim.setEndValue(1.0)
         self._anim.setEasingCurve(QEasingCurve.OutCubic)
-        try:
-            self._anim.finished.disconnect()
-        except RuntimeError:
-            pass
+        self._pos_anim.setDuration(220)
+        self._pos_anim.setStartValue(start_pt)
+        self._pos_anim.setEndValue(end_pt)
+        self._pos_anim.setEasingCurve(QEasingCurve.OutCubic)
         self._anim.start()
+        self._pos_anim.start()
         self._timer.start(ms)
 
-    def reposition(self) -> None:
+    def _target_pos(self) -> QPoint:
         p = self.parentWidget()
         if p:
-            self.move(p.width() - self.width() - 28, p.height() - self.height() - 28)
+            return QPoint(p.width() - self.width() - 28, p.height() - self.height() - 28)
+        return QPoint(0, 0)
+
+    def reposition(self) -> None:
+        if self.parentWidget():
+            self.move(self._target_pos())
 
     def _fade_out(self) -> None:
+        self._fading_out = True
         self._anim.stop()
-        self._anim.setDuration(260)
+        self._anim.setDuration(240)
         self._anim.setStartValue(1.0)
         self._anim.setEndValue(0.0)
-        self._anim.finished.connect(self.hide)
         self._anim.start()
 
 
@@ -428,6 +517,18 @@ class BaseDialog(QDialog):
         self.setModal(True)
         self.setMinimumWidth(width)
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        self._enter_anim: QPropertyAnimation | None = None
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.setWindowOpacity(0.0)
+        anim = QPropertyAnimation(self, b"windowOpacity", self)
+        anim.setDuration(155)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._enter_anim = anim
+        anim.start()
 
 
 class ConfirmDialog(BaseDialog):
@@ -494,3 +595,93 @@ def prompt_text(parent, title: str, field_label: str, value: str = "",
                 ok_text: str = "Save", placeholder: str = "") -> str | None:
     d = TextPrompt(parent, title, field_label, value, ok_text, placeholder)
     return d.value() if d.exec() == QDialog.Accepted else None
+
+
+class QuickShareDialog(BaseDialog):
+    """Quickly share document(s) to a client's email (copies files to clipboard for instant Ctrl+V attach)."""
+
+    def __init__(self, parent, client_name: str, client_email: str,
+                 files: list[Path], firm_name: str):
+        super().__init__(parent, "Quick share via email", 520)
+        self._files = [Path(p) for p in files if Path(p).exists()]
+        lay = vbox(self, (26, 24, 26, 22), 14)
+
+        top = hbox(spacing=14)
+        badge = QLabel()
+        badge.setFixedSize(46, 46)
+        badge.setAlignment(Qt.AlignCenter)
+        badge.setStyleSheet("background:#EAF1FF; border-radius:14px;")
+        badge.setPixmap(icons.pixmap("mail", "#2563EB", 22))
+        top.addWidget(badge, 0, Qt.AlignTop)
+        col = vbox(spacing=3)
+        col.addWidget(label(f"Share to {client_name}", "h2", wrap=True))
+        col.addWidget(label(
+            "Opens a pre-filled email AND copies the file(s) to your clipboard — just press Ctrl+V to attach!",
+            "sub", wrap=True))
+        top.addLayout(col, 1)
+        lay.addLayout(top)
+
+        self.to_edit = QLineEdit(client_email)
+        self.to_edit.setPlaceholderText("client@example.com")
+        self.f_to = Field("Recipient email", self.to_edit, True)
+
+        names = ", ".join(p.name for p in self._files[:3])
+        if len(self._files) > 3:
+            names += f" (+{len(self._files) - 3} more)"
+        self.subj = QLineEdit(f"Documents from {firm_name} — {names}")
+        from PySide6.QtWidgets import QTextEdit
+        self.body = QTextEdit()
+        self.body.setAcceptRichText(False)
+        self.body.setFixedHeight(92)
+        self.body.setPlainText(
+            f"Dear {client_name},\n\n"
+            f"Please find attached the document(s): {names}.\n\n"
+            f"Warm regards,\n{firm_name}"
+        )
+
+        # Attached files summary pill box
+        fbox = QFrame()
+        fbox.setObjectName("shareFiles")
+        fbox.setStyleSheet("QFrame#shareFiles { background:#F3F5F8; border:1px solid #DFE3EA; border-radius:12px; }")
+        fl = vbox(fbox, (14, 10, 14, 10), 4)
+        fl.addWidget(label(f"FILES READY TO ATTACH ({len(self._files)})", "muted"))
+        fl.addWidget(label(names or "No files selected", "h3", wrap=True))
+
+        lay.addWidget(self.f_to)
+        lay.addWidget(Field("Subject", self.subj))
+        lay.addWidget(Field("Message", self.body))
+        lay.addWidget(fbox)
+
+        row = hbox(spacing=10)
+        b_exp = button("Show in Folder", "folder-open")
+        b_exp.clicked.connect(self._reveal)
+        b_mail = button("Mail App", "mail")
+        b_mail.clicked.connect(lambda: self._send("mailto"))
+        b_gmail = button("Open in Gmail", "external-link", "primary")
+        b_gmail.setDefault(True)
+        b_gmail.clicked.connect(lambda: self._send("gmail"))
+        c = button("Close", kind="ghost")
+        c.clicked.connect(self.reject)
+        row.addWidget(b_exp)
+        row.addStretch(1)
+        row.addWidget(c)
+        row.addWidget(b_mail)
+        row.addWidget(b_gmail)
+        lay.addLayout(row)
+
+    def _reveal(self) -> None:
+        from .. import storage
+        if self._files:
+            storage.reveal(self._files[0])
+
+    def _send(self, via: str) -> None:
+        from .. import storage, validators
+        to = self.to_edit.text().strip()
+        if not to or not validators.valid_email(to):
+            self.f_to.set_error("Enter a valid client email address")
+            return
+        self.f_to.set_error("")
+        if self._files:
+            storage.copy_files_to_clipboard(self._files)
+        storage.open_email_draft(to, self.subj.text().strip(), self.body.toPlainText().strip(), via=via)
+        self.accept()

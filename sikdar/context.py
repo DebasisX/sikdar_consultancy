@@ -236,6 +236,7 @@ class AppContext:
         assert self.vault
         row = dict(data)
         row["portal_password"] = self.vault.encrypt(row.get("portal_password", ""))
+        row["gst_password"] = self.vault.encrypt(row.get("gst_password", ""))
         row["photo"] = self.save_photo(photo_src) if photo_src else ""
         row["folder_name"] = f"tmp-{uuid.uuid4().hex[:8]}"
         cid = self.db.add_client(row)
@@ -257,6 +258,7 @@ class AppContext:
             return
         row = dict(data)
         row["portal_password"] = self.vault.encrypt(row.get("portal_password", ""))
+        row["gst_password"] = self.vault.encrypt(row.get("gst_password", ""))
         if photo_src:
             row["photo"] = self.save_photo(photo_src)
             self.remove_photo(old["photo"])
@@ -282,20 +284,25 @@ class AppContext:
     def portal_password(self, client_row) -> str:
         return self.vault.decrypt(client_row["portal_password"]) if self.vault else ""
 
+    def gst_password(self, client_row) -> str:
+        val = client_row["gst_password"] if "gst_password" in client_row.keys() else ""
+        return self.vault.decrypt(val) if (self.vault and val) else ""
+
     # ---------------------------------------------------- data tools
     def export_clients_csv(self, dest: str, include_passwords: bool) -> int:
         rows = self.db.list_clients()
         with open(dest, "w", newline="", encoding="utf-8-sig") as fh:
             w = csv.writer(fh)
-            head = ["Name", "Phone", "Email", "PAN", "Aadhaar", "DOB", "Address", "Status"]
+            head = ["Name", "Phone", "Email", "PAN", "Aadhaar", "GST Portal ID", "DOB", "Address", "Status"]
             if include_passwords:
-                head.append("IT Portal Password")
+                head += ["ITR Portal Password", "GST Portal Password"]
             w.writerow(head)
             for r in rows:
+                gst_id = r["gst_id"] if "gst_id" in r.keys() else ""
                 line = [r["name"], r["phone"], r["email"], r["pan"],
-                        validators.format_aadhar(r["aadhar"]), r["dob"], r["address"], r["status"]]
+                        validators.format_aadhar(r["aadhar"]), gst_id, r["dob"], r["address"], r["status"]]
                 if include_passwords:
-                    line.append(self.portal_password(r))
+                    line += [self.portal_password(r), self.gst_password(r)]
                 w.writerow(line)
         return len(rows)
 
@@ -388,10 +395,11 @@ class AppContext:
         if not self.verify_owner_password(password):
             raise AuthError("Incorrect owner password.")
         # Delete all client-related DB tables
-        for tbl in ("fee_payments", "fees", "tasks", "clients", "statutory_overrides", "activity"):
+        for tbl in ("fee_payments", "fees", "tasks", "clients",
+                    "statutory_overrides", "statutory_custom", "activity"):
             self.db.conn.execute(f"DELETE FROM {tbl}")
         self.db.conn.execute("DELETE FROM sqlite_sequence WHERE name IN "
-                             "('fee_payments','fees','tasks','clients','activity')")
+                             "('fee_payments','fees','tasks','clients','statutory_custom','activity')")
         self.db.conn.commit()
         # Move client folders, photos, and generated bills/receipts to Recycle Bin
         for folder in (paths.clients_dir(), paths.photos_dir(), paths.bills_dir()):

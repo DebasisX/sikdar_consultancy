@@ -34,11 +34,11 @@ QSS = f"""
 * {{ font-family: {FONT}; font-size: 13px; color: {TEXT}; outline: 0; }}
 QMainWindow, QDialog {{ background: {BG}; }}
 QWidget#page {{
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #F3F4F7, stop:1 #EAECEF);
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #EEF1F7, stop:0.5 #E6EAF2, stop:1 #ECEFF5);
 }}
 QToolTip {{
-    background: {NAVY_2}; color: #F8F9FA; border: 1px solid {NAVY_3};
-    padding: 7px 10px; border-radius: 9px;
+    background: rgba(19, 21, 26, 240); color: #F8F9FA; border: 1px solid rgba(255, 255, 255, 36);
+    padding: 7px 10px; border-radius: 10px;
 }}
 
 /* ---------- typography ---------- */
@@ -51,20 +51,31 @@ QLabel#muted {{ color: {MUTED}; font-size: 12px; }}
 QLabel#fieldLabel {{ color: {TEXT_2}; font-size: 12px; font-weight: 600; }}
 QLabel#error {{ color: {DANGER}; font-size: 12px; }}
 
-/* ---------- cards ---------- */
+/* ---------- cards (frosted glass aesthetic) ---------- */
 QFrame#card {{
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFFFFF, stop:1 #FAFBFD);
-    border: 1px solid {BORDER};
-    border-radius: 18px;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(255, 255, 255, 246),
+        stop:0.6 rgba(251, 252, 255, 232),
+        stop:1 rgba(243, 246, 252, 222));
+    border-top: 1.5px solid rgba(255, 255, 255, 255);
+    border-left: 1px solid #E1E6F0;
+    border-right: 1px solid #DAE0EC;
+    border-bottom: 1.5px solid #CFD6E4;
+    border-radius: 20px;
 }}
 QFrame#card[clickable="true"]:hover {{
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFFFFF, stop:1 #F1F3F7);
-    border: 1px solid #B5BCC8;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(255, 255, 255, 255),
+        stop:1 rgba(238, 242, 250, 240));
+    border: 1.5px solid #B6BFCE;
 }}
-QFrame#dashRow {{ background: transparent; border-radius: 12px; border: 1px solid transparent; }}
-QFrame#dashRow:hover {{ background: #F3F5F8; border: 1px solid #E4E7EE; }}
+QFrame#dashRow {{ background: transparent; border-radius: 13px; border: 1px solid transparent; }}
+QFrame#dashRow:hover {{
+    background: rgba(238, 241, 248, 200);
+    border: 1px solid rgba(210, 217, 230, 210);
+}}
 QFrame#cardFlat {{
-    background: {CARD};
+    background: rgba(255, 255, 255, 235);
     border: 1px solid {BORDER};
     border-radius: 16px;
 }}
@@ -128,38 +139,50 @@ QPushButton[kind="danger"] {{ background: {CARD}; color: {DANGER}; border: 1px s
 QPushButton[kind="danger"]:hover {{ background: {DANGER_SOFT}; border-color: #DDA4A4; }}
 QPushButton[kind="solidDanger"] {{ background: {DANGER}; color: #FFFFFF; border: 1px solid {DANGER}; }}
 QPushButton[kind="solidDanger"]:hover {{ background: #991B1B; }}
-QPushButton[kind="done"] {{
-    background: #ECFDF5; color: #047857; border: 1px solid #A7F3D0;
-    border-radius: 10px; padding: 5px 11px; font-size: 12px; font-weight: 700;
-}}
-QPushButton[kind="done"]:hover {{ background: #059669; color: #FFFFFF; border-color: #059669; }}
-QPushButton[kind="done"]:pressed {{ background: #047857; color: #FFFFFF; }}
-QPushButton[kind="undo"] {{
-    background: #F1F3F6; color: {TEXT_2}; border: 1px solid {BORDER_STRONG};
+QPushButton[kind="done"], QPushButton[kind="pay"] {{
+    background: rgba(236, 253, 245, 230); color: #047857; border: 1px solid #B6EED6;
     border-radius: 10px; padding: 5px 11px; font-size: 12px; font-weight: 600;
 }}
-QPushButton[kind="undo"]:hover {{ background: #E4E7EE; color: {TEXT}; }}
+QPushButton[kind="done"]:hover, QPushButton[kind="pay"]:hover {{
+    background: #059669; color: #FFFFFF; border-color: #059669;
+}}
+QPushButton[kind="done"]:pressed, QPushButton[kind="pay"]:pressed {{
+    background: #047857; color: #FFFFFF; border-color: #047857;
+}}
+QPushButton[kind="undo"] {{
+    background: rgba(244, 246, 250, 235); color: {TEXT_2}; border: 1px solid {BORDER_STRONG};
+    border-radius: 10px; padding: 5px 11px; font-size: 12px; font-weight: 600;
+}}
+QPushButton[kind="undo"]:hover {{ background: #E6E9F0; color: {TEXT}; }}
+QPushButton[kind="share"] {{
+    background: rgba(234, 241, 255, 230); color: #1D4ED8; border: 1px solid #C7DAFE;
+    border-radius: 10px; padding: 5px 11px; font-size: 12px; font-weight: 600;
+}}
+QPushButton[kind="share"]:hover {{ background: #2563EB; color: #FFFFFF; border-color: #2563EB; }}
+QPushButton[kind="share"]:pressed {{ background: #1D4ED8; color: #FFFFFF; }}
 QPushButton[kind="ghost"] {{ background: transparent; border: 1px solid transparent; color: {TEXT_2}; }}
 QPushButton[kind="ghost"]:hover {{ background: #E5E8EE; color: {TEXT}; }}
 QPushButton[kind="link"] {{ background: transparent; border: none; color: {TEXT_2}; padding: 4px 8px; font-weight: 600; }}
 QPushButton[kind="link"]:hover {{ color: {TEXT}; background: transparent; text-decoration: underline; }}
-QPushButton[size="sm"] {{ padding: 6px 12px; border-radius: 10px; font-size: 12px; }}
+QPushButton[size="sm"] {{ padding: 5px 10px; border-radius: 9px; font-size: 12px; font-weight: 600; }}
 QToolButton {{ background: transparent; border: none; border-radius: 10px; padding: 6px; }}
 QToolButton:hover {{ background: #E5E8EE; }}
 
-/* ---------- quick link tiles ---------- */
+/* ---------- quick link tiles (frosted glass) ---------- */
 QPushButton#quickLink {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FFFFFF, stop:1 #F2F4F8);
-    color: {TEXT}; border: 1px solid #DDE1E8; border-radius: 15px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(255, 255, 255, 240), stop:1 rgba(242, 245, 251, 215));
+    color: {TEXT}; border: 1px solid #DDE2EC; border-radius: 16px;
     padding: 0px; text-align: left; font-weight: 600;
 }}
 QPushButton#quickLink:hover {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #F9FAFC, stop:1 #E6E9F0);
-    border-color: #AEB5C2;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 rgba(255, 255, 255, 255), stop:1 rgba(232, 237, 247, 245));
+    border-color: #ADB6C7;
 }}
 QPushButton#quickLink:pressed {{
-    background: #DFE3EB;
-    border-color: #98A0AE;
+    background: #DCE1EC;
+    border-color: #95A0B2;
 }}
 
 /* ---------- inputs ---------- */
@@ -189,9 +212,16 @@ QLineEdit:read-only {{ background: #F2F4F7; }}
 QLineEdit#search {{ background: #FFFFFF; padding: 10px 14px 10px 38px; border-radius: 13px; }}
 QComboBox::drop-down {{ background: transparent; border: none; width: 30px; }}
 QComboBox::down-arrow {{ image: url(@@CHEVRON@@); width: 14px; height: 14px; }}
+QComboBoxPrivateContainer {{ background: transparent; border: none; }}
 QComboBox QAbstractItemView {{
-    background: #FFFFFF; border: 1px solid {BORDER_STRONG}; border-radius: 10px; padding: 4px;
+    background: #FFFFFF; border: 1px solid {BORDER_STRONG}; border-radius: 12px; padding: 5px;
     selection-background-color: {BRAND_SOFT}; selection-color: {TEXT}; outline: 0;
+}}
+QComboBox QAbstractItemView::item {{
+    padding: 7px 10px; border-radius: 7px; min-height: 22px;
+}}
+QComboBox QAbstractItemView::item:selected {{
+    background: {BRAND_SOFT}; color: {TEXT};
 }}
 QDateEdit::drop-down {{ background: transparent; border: none; width: 30px; }}
 QDateEdit::down-arrow {{ image: url(@@CHEVRON@@); width: 14px; height: 14px; }}

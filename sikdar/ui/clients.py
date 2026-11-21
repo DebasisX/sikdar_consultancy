@@ -110,19 +110,36 @@ class ClientDialog(BaseDialog):
         self.aadhar = QLineEdit()
         self.aadhar.setPlaceholderText("XXXX XXXX XXXX")
         self.aadhar.setMaxLength(14)
-        self.f_pan = Field("PAN", self.pan, True)
+        self.f_pan = Field("PAN", self.pan)
         self.f_aadhar = Field("Aadhaar number", self.aadhar)
         g2.addWidget(self.f_pan, 0, 0)
         g2.addWidget(self.f_aadhar, 0, 1)
         form.addLayout(g2)
 
         form.addWidget(self._divider())
-        form.addWidget(label("Income Tax e-filing portal", "h3"))
-        self.portal_pw = PasswordEdit("Portal password")
-        self.f_portal = Field("Portal password", self.portal_pw,
-                              hint="User ID on the portal is the client's PAN. "
-                                   "Stored encrypted; visible only after owner login.")
-        form.addWidget(self.f_portal)
+        form.addWidget(label("Portal logins (optional — ITR, GST, or both)", "h3"))
+        gp = QGridLayout()
+        gp.setHorizontalSpacing(16)
+        gp.setVerticalSpacing(12)
+        self.portal_pw = PasswordEdit("ITR portal password (optional)")
+        self.gst_id = QLineEdit()
+        self.gst_id.setPlaceholderText("GST username / GSTIN (optional)")
+        self.gst_pw = PasswordEdit("GST portal password (optional)")
+        self.f_portal = Field(
+            "Income Tax (ITR) password", self.portal_pw,
+            hint="ITR User ID is the client's PAN.",
+        )
+        self.f_gst_id = Field("GST (GSTR) User ID", self.gst_id)
+        self.f_gst_pw = Field(
+            "GST (GSTR) password", self.gst_pw,
+            hint="Both passwords are stored encrypted on this PC.",
+        )
+        gp.addWidget(self.f_portal, 0, 0)
+        gp.addWidget(self.f_gst_id, 0, 1)
+        gp.addWidget(self.f_gst_pw, 1, 1)
+        gp.setColumnStretch(0, 1)
+        gp.setColumnStretch(1, 1)
+        form.addLayout(gp)
 
         form.addWidget(self._divider())
         g3 = QGridLayout()
@@ -216,6 +233,8 @@ class ClientDialog(BaseDialog):
             if d.isValid():
                 self.dob.setDate(d)
         self.portal_pw.setText(self.ctx.portal_password(c))
+        self.gst_id.setText(c["gst_id"] if "gst_id" in c.keys() else "")
+        self.gst_pw.setText(self.ctx.gst_password(c))
         self.avatar.set_client(self.ctx.photo_path(c["photo"]), c["name"])
 
     # -- save
@@ -236,9 +255,9 @@ class ClientDialog(BaseDialog):
         check(self.f_phone, not phone or not validators.valid_phone(phone),
               "Enter a valid 10-digit mobile number")
         check(self.f_email, bool(email) and not validators.valid_email(email), "Enter a valid email address")
-        pan_msg = "PAN is required" if not pan else "Format: 5 letters, 4 digits, 1 letter"
-        pan_bad = not pan or not validators.valid_pan(pan)
-        if not pan_bad and self.ctx.db.pan_exists(pan, self.client["id"] if self.client else None):
+        pan_bad = bool(pan) and not validators.valid_pan(pan)
+        pan_msg = "Format: 5 letters, 4 digits, 1 letter"
+        if pan and not pan_bad and self.ctx.db.pan_exists(pan, self.client["id"] if self.client else None):
             pan_bad, pan_msg = True, "A client with this PAN already exists"
         check(self.f_pan, pan_bad, pan_msg)
         check(self.f_aadhar, bool(aadhar) and not validators.valid_aadhar(aadhar),
@@ -253,7 +272,10 @@ class ClientDialog(BaseDialog):
         self.result_data = {
             "name": name, "phone": phone, "email": email, "pan": pan, "aadhar": aadhar,
             "dob": dob, "address": self.address.toPlainText().strip(),
-            "portal_password": self.portal_pw.text(), "status": self.status.currentText(),
+            "portal_password": self.portal_pw.text(),
+            "gst_id": self.gst_id.text().strip(),
+            "gst_password": self.gst_pw.text(),
+            "status": self.status.currentText(),
             "notes": self.notes.toPlainText().strip(),
         }
         self.accept()
@@ -318,10 +340,10 @@ class ClientsPage(QWidget):
         self.table.cellClicked.connect(lambda r, c: self._open_row(r) if c == 7 else None)
         self.table.cellDoubleClicked.connect(lambda r, _c: self._open_row(r))
         self.table.customContextMenuRequested.connect(self._menu)
-        pl.addWidget(self.table)
+        pl.addWidget(self.table, 1)
         self.empty = empty_state("users", "No clients yet",
                                  "Register your first client to start organising their documents.")
-        pl.addWidget(self.empty)
+        pl.addWidget(self.empty, 1)
         lay.addWidget(self.panel, 1)
         lay.addWidget(label("Tip: double-click a client to open their profile and documents.", "muted"))
 

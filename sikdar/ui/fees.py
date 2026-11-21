@@ -15,8 +15,8 @@ from .. import deadlines, paths, pdf_bill, storage, validators
 from ..context import AppContext
 from . import icons, theme
 from .widgets import (
-    BaseDialog, Field, PageHeader, StatCard, button, card, clean_date_edit, confirm, empty_state,
-    hbox, label, left_headers, vbox,
+    BaseDialog, Field, PageHeader, QuickShareDialog, StatCard, button, card, clean_date_edit,
+    confirm, empty_state, hbox, label, left_headers, vbox,
 )
 
 PAY_MODES = ["UPI", "Cash", "Bank Transfer", "Cheque", "Card"]
@@ -56,9 +56,13 @@ class MoneyEdit(QLineEdit):
 class PdfReadyDialog(BaseDialog):
     """Shown right after generating a Bill or Receipt PDF so the user can view or share it."""
 
-    def __init__(self, parent, title: str, pdf_path: Path):
-        super().__init__(parent, title, 490)
+    def __init__(self, parent, title: str, pdf_path: Path, client_name: str = "",
+                 client_email: str = "", firm_name: str = ""):
+        super().__init__(parent, title, 520)
         self._path = pdf_path
+        self._cname = client_name
+        self._cemail = client_email
+        self._firm = firm_name
         lay = vbox(self, (26, 24, 26, 22), 14)
         top = hbox(spacing=14)
         badge = QLabel()
@@ -69,7 +73,7 @@ class PdfReadyDialog(BaseDialog):
         top.addWidget(badge, 0, Qt.AlignTop)
         col = vbox(spacing=4)
         col.addWidget(label(title, "h2"))
-        col.addWidget(label("Saved and ready to share via WhatsApp or Email.", "sub", wrap=True))
+        col.addWidget(label("Saved and ready to share via Email or WhatsApp.", "sub", wrap=True))
         top.addLayout(col, 1)
         lay.addLayout(top)
 
@@ -86,15 +90,21 @@ class PdfReadyDialog(BaseDialog):
         row = hbox(spacing=10)
         b_folder = button("Show in Folder", "folder-open")
         b_folder.clicked.connect(lambda: storage.reveal(self._path))
+        b_email = button("Email to Client", "mail", "share")
+        b_email.clicked.connect(self._email)
         b_open = button("Open PDF", "external-link", "primary")
         b_open.clicked.connect(self._open)
         b_done = button("Done", kind="ghost")
         b_done.clicked.connect(self.accept)
         row.addWidget(b_folder)
+        row.addWidget(b_email)
         row.addStretch(1)
         row.addWidget(b_done)
         row.addWidget(b_open)
         lay.addLayout(row)
+
+    def _email(self) -> None:
+        QuickShareDialog(self, self._cname or "Client", self._cemail, [self._path], self._firm).exec()
 
     def _open(self) -> None:
         storage.open_path(self._path)
@@ -143,12 +153,19 @@ class FeeDialog(BaseDialog):
         self.mode.addItems(PAY_MODES)
         self.date = clean_date_edit()
         self.date.setDate(QDate.fromString(fee["date"], Qt.ISODate) if fee else QDate.currentDate())
+        self._existing_recv = float(fee["received"]) if fee else 0.0
         if fee:
             self.billed.set_amount(fee["billed"])
-            self.received.set_amount(fee["received"])
+            self.received.clear()  # In edit mode, enter ONLY additional instalment to add!
 
         self.f_billed = Field("Billed amount (₹)", self.billed, True)
-        self.f_recv = Field("Received so far (₹)", self.received)
+        if fee:
+            self.f_recv = Field(
+                f"Add new instalment (₹)  ·  Already paid: {validators.inr(self._existing_recv)}",
+                self.received,
+            )
+        else:
+            self.f_recv = Field("Received now (₹)", self.received)
 
         lay.addWidget(Field("Client", self.client, True))
         lay.addWidget(self.ledger_box)
@@ -161,8 +178,7 @@ class FeeDialog(BaseDialog):
         r2.addWidget(self.f_billed, 1)
         r2.addWidget(self.f_recv, 1)
         lay.addLayout(r2)
-        if not fee:
-            lay.addWidget(Field("Payment mode (if received now)", self.mode))
+        lay.addWidget(Field("Payment mode (if payment entered above)", self.mode))
 
         self.live_summary = label("", "sub")
         lay.addWidget(self.live_summary)
@@ -212,13 +228,16 @@ class FeeDialog(BaseDialog):
             self.ledger_sub.setText("No earlier fee entries for this client.")
         self._refresh_live()
 
+    def _total_received(self) -> float:
+        return round(self._existing_recv + self.received.amount(), 2) if self.fee else self.received.amount()
+
     def _refresh_live(self) -> None:
         b = self.billed.amount()
-        r = self.received.amount()
+        r = self._total_received()
         bal = round(b - r, 2)
         old = getattr(self, "_old_bal", 0.0)
         total = round(bal + max(old, 0.0), 2)
-        parts = [f"This bill balance: {validators.inr(bal)}"]
+        parts = [f"Total paid on this bill: {validators.inr(r)}", f"Remaining: {validators.inr(bal)}"]
         if old > 0.004:
             parts.append(f"Total with old dues: {validators.inr(total)}")
         self.live_summary.setText("   ·   ".join(parts))
@@ -227,23 +246,26 @@ class FeeDialog(BaseDialog):
         if self.client.currentData() is None:
             self.f_billed.set_error("Register a client first")
             return
-        b, r = self.billed.amount(), self.received.amount()
+        b, r = self.billed.amount(), self._total_received()
         self.f_billed.set_error("")
         self.f_recv.set_error("")
         if b <= 0:
             self.f_billed.set_error("Enter the billed amount")
             return
-        if r > b:
-            self.f_recv.set_error("Received cannot exceed billed amount")
+        if r > b + 0.004:
+            self.f_recv.set_error(f"Exceeds remaining balance ({validators.inr(max(b - self._existing_recv, 0))})")
             return
         self.accept()
 
     def values(self):
         return (
             self.client.currentData(), self.fy.currentText().strip(),
-            self.desc.text().strip(), self.billed.amount(), self.received.amount(),
+            self.desc.text().strip(), self.billed.amount(), self._total_received(),
             self.date.date().toString(Qt.ISODate),
         )
+
+    def added_instalment(self) -> float:
+        return self.received.amount() if self.fee else 0.0
 
     def payment_mode(self) -> str:
         return self.mode.currentText()
@@ -275,9 +297,24 @@ class RecordPaymentDialog(BaseDialog):
                 "muted"))
         lay.addWidget(info)
 
-        self.amount = MoneyEdit("Amount received")
+        self.amount = MoneyEdit("Enter new instalment amount")
         self.amount.set_amount(bal)
-        self.f_amt = Field("Amount received (₹)", self.amount, True)
+        self.f_amt = Field("New payment received (₹)", self.amount, True)
+
+        # Quick-pick chips so settling full or partial balance is 1 click
+        qrow = hbox(spacing=8)
+        b_full = button(f"Full balance ({validators.inr(bal)})", kind="pay", small=True)
+        b_full.clicked.connect(lambda: self.amount.set_amount(bal))
+        half = round(bal / 2.0, 2)
+        b_half = button(f"Half ({validators.inr(half)})", small=True)
+        b_half.clicked.connect(lambda: self.amount.set_amount(half))
+        qrow.addWidget(b_full)
+        if bal >= 2:
+            qrow.addWidget(b_half)
+        qrow.addStretch(1)
+
+        self.after_lbl = label("", "sub")
+        self.amount.textChanged.connect(self._update_after)
 
         self.pay_date = clean_date_edit()
         self.pay_date.setDate(QDate.currentDate())
@@ -289,12 +326,15 @@ class RecordPaymentDialog(BaseDialog):
         self.gen_receipt.setChecked(True)
 
         lay.addWidget(self.f_amt)
+        lay.addLayout(qrow)
+        lay.addWidget(self.after_lbl)
         r1 = hbox(spacing=14)
         r1.addWidget(Field("Payment date", self.pay_date), 1)
         r1.addWidget(Field("Mode", self.mode), 1)
         lay.addLayout(r1)
         lay.addWidget(Field("Remarks (optional)", self.note))
         lay.addWidget(self.gen_receipt)
+        self._update_after()
 
         foot = hbox(spacing=10)
         foot.addStretch(1)
@@ -306,6 +346,13 @@ class RecordPaymentDialog(BaseDialog):
         foot.addWidget(c)
         foot.addWidget(ok)
         lay.addLayout(foot)
+
+    def _update_after(self) -> None:
+        amt = self.amount.amount()
+        new_paid = round(float(self.fee["received"]) + amt, 2)
+        new_rem = round(max(float(self.fee["billed"]) - new_paid, 0.0), 2)
+        status = "Settled in full!" if new_rem <= 0.004 else f"Remaining: {validators.inr(new_rem)}"
+        self.after_lbl.setText(f"After this payment  →  Total paid: {validators.inr(new_paid)}   ·   {status}")
 
     def _ok(self) -> None:
         amt = self.amount.amount()
@@ -379,13 +426,13 @@ class FeesPage(QWidget):
 
         self.panel = card()
         pl = vbox(self.panel, (10, 6, 10, 10))
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels(
-            ["Date", "Client", "FY", "Description", "Billed", "Received", "Balance", "Status"])
+            ["Date", "Client", "FY", "Description", "Billed", "Received", "Balance", "Status", "Action"])
         t = self.table
         left_headers(t)
         t.verticalHeader().setVisible(False)
-        t.verticalHeader().setDefaultSectionSize(52)
+        t.verticalHeader().setDefaultSectionSize(54)
         t.setShowGrid(False)
         t.setSelectionBehavior(QAbstractItemView.SelectRows)
         t.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -393,25 +440,27 @@ class FeesPage(QWidget):
         t.setFocusPolicy(Qt.NoFocus)
         hh = t.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.Fixed)
-        t.setColumnWidth(0, 110)
+        t.setColumnWidth(0, 102)
         hh.setSectionResizeMode(1, QHeaderView.Stretch)
         hh.setSectionResizeMode(2, QHeaderView.Fixed)
-        t.setColumnWidth(2, 80)
+        t.setColumnWidth(2, 86)
         hh.setSectionResizeMode(3, QHeaderView.Stretch)
         for i in (4, 5, 6):
             hh.setSectionResizeMode(i, QHeaderView.Fixed)
-            t.setColumnWidth(i, 120)
+            t.setColumnWidth(i, 92)
         hh.setSectionResizeMode(7, QHeaderView.Fixed)
-        t.setColumnWidth(7, 100)
+        t.setColumnWidth(7, 86)
+        hh.setSectionResizeMode(8, QHeaderView.Fixed)
+        t.setColumnWidth(8, 128)
         t.setContextMenuPolicy(Qt.CustomContextMenu)
         t.customContextMenuRequested.connect(self._menu)
-        t.cellDoubleClicked.connect(lambda r, _c: self.edit_fee(r))
-        pl.addWidget(t)
+        t.cellDoubleClicked.connect(lambda r, c: self.edit_fee(r) if c != 8 else None)
+        pl.addWidget(t, 1)
         self.empty = empty_state("rupee", "No fee entries", "Add an entry when you bill a client.")
-        pl.addWidget(self.empty)
+        pl.addWidget(self.empty, 1)
         lay.addWidget(self.panel, 1)
         lay.addWidget(label(
-            "Tip: select a row and click Bill PDF / Receipt PDF, or right-click to record a payment.",
+            "Tip: click '+ Pay' on any Pending/Partial row to add an instalment in one click, or right-click for more.",
             "muted"))
 
     def refresh(self) -> None:
@@ -481,6 +530,24 @@ class FeesPage(QWidget):
             s = QTableWidgetItem(st)
             s.setForeground(QColor(colr))
             self.table.setItem(r, 7, s)
+
+            # Inline 1-click Action button: '+ Pay' for Pending/Partial, 'Receipt' for Paid
+            aw = QWidget()
+            al = hbox(aw, (4, 0, 6, 0), 0)
+            fid = f["id"]
+            if bal > 0.004:
+                bp = button("+ Pay", kind="pay", small=True)
+                bp.setMinimumWidth(82)
+                bp.setToolTip("Record next instalment without retyping already-paid amount")
+                bp.clicked.connect(lambda _=False, x=fid: self._pay_by_id(x))
+                al.addWidget(bp, 0, Qt.AlignVCenter | Qt.AlignRight)
+            else:
+                br = button("Receipt", "file-text", small=True)
+                br.setMinimumWidth(96)
+                br.setToolTip("Generate / email Payment Receipt PDF")
+                br.clicked.connect(lambda _=False, x=fid: self.generate_pdf_for(x, "receipt"))
+                al.addWidget(br, 0, Qt.AlignVCenter | Qt.AlignRight)
+            self.table.setCellWidget(r, 8, aw)
         self.table.setVisible(bool(rows))
         self.empty.setVisible(not rows)
 
@@ -514,7 +581,17 @@ class FeesPage(QWidget):
             return
         label_kind = "Receipt PDF" if kind == "receipt" else "Bill PDF"
         self.ctx.db.log(f"Generated {label_kind} for {f['client_name']} ({dest.name})")
-        PdfReadyDialog(self.window(), f"{label_kind} generated", dest).exec()
+        PdfReadyDialog(
+            self.window(), f"{label_kind} generated", dest,
+            client_name=f["client_name"],
+            client_email=f["client_email"] or "",
+            firm_name=self.ctx.firm_name(),
+        ).exec()
+
+    def _pay_by_id(self, fid: int) -> None:
+        f = self.ctx.db.get_fee(fid)
+        if f:
+            self._record_payment(f)
 
     def add_fee(self, client_id: int | None = None) -> None:
         d = FeeDialog(self.window(), self.ctx, None, client_id)
@@ -540,13 +617,12 @@ class FeesPage(QWidget):
         if d.exec() == QDialog.Accepted:
             cid, fy, desc, billed, recv, dt = d.values()
             self.ctx.db.update_fee(f["id"], cid, fy, desc, billed, recv, dt)
-            # If owner increased received directly in Edit, log the delta as a payment
-            delta = round(recv - old_recv, 2)
-            if delta > 0.004:
+            added = d.added_instalment()
+            if added > 0.004:
                 self.ctx.db.conn.execute(
                     "INSERT INTO fee_payments(fee_id,amount,date,mode,note,created_at) "
                     "VALUES(?,?,?,?,?,datetime('now','localtime'))",
-                    (f["id"], delta, date.today().isoformat(), "Cash", "Updated in fee entry"))
+                    (f["id"], added, date.today().isoformat(), d.payment_mode(), "Additional instalment"))
                 self.ctx.db.conn.commit()
             self.refresh()
             self.data_changed.emit()

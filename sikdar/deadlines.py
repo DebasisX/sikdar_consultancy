@@ -1,12 +1,15 @@
-"""Statutory Income-Tax calendar helper and official quick links.
+"""Statutory Income-Tax & GST calendar helper and verified official India quick links.
 
-Dates default to the standard statutory due dates, and any entry can be edited
-or extended by the owner (persisted in SQLite via `statutory_overrides`).
+Built-in dates follow standard statutory due dates and can be edited/extended
+(persisted in `statutory_overrides`). The owner can also add, edit, or delete
+manual statutory dates (persisted in `statutory_custom`).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+
+STATUTORY_KINDS = ["ITR", "GST", "TDS", "TAX", "AUDIT", "OTHER"]
 
 
 @dataclass
@@ -15,9 +18,10 @@ class Statutory:
     due: date
     default_due: date
     title: str
-    kind: str  # 'ITR' | 'TAX' | 'TDS' | 'AUDIT'
+    kind: str  # 'ITR' | 'GST' | 'TDS' | 'TAX' | 'AUDIT' | 'OTHER'
     edited: bool = False
     note: str = ""
+    custom_id: int | None = None  # non-None for manually added statutory dates
 
 
 @dataclass(frozen=True)
@@ -32,19 +36,19 @@ QUICK_LINKS: list[QuickLink] = [
     QuickLink("Income Tax e-Filing", "ITR, AIS, e-Verify & notices",
               "https://www.incometax.gov.in/iec/foportal/", "Portal"),
     QuickLink("CBDT Tax Calendar", "Official due dates & extensions",
-              "https://incometaxindia.gov.in/Pages/deadline.aspx", "Calendar"),
+              "https://www.incometaxindia.gov.in/en/tax-calendar", "Calendar"),
     QuickLink("e-Pay Tax (Challan 280)", "Advance, Self-Assessment & TDS",
               "https://eportal.incometax.gov.in/iec/foservices/#/e-pay-tax-prelogin/user-details", "Payment"),
     QuickLink("TRACES Portal", "Form 16, 16A, 26AS & TDS",
-              "https://www.tdscpc.gov.in/", "TDS"),
+              "https://traces.tdscpc.gov.in/", "TDS"),
     QuickLink("Income Tax India", "Acts, Rules & Circulars",
-              "https://incometaxindia.gov.in/", "Reference"),
+              "https://www.incometaxindia.gov.in/", "Reference"),
     QuickLink("GST Portal", "Returns, notices & search",
               "https://www.gst.gov.in/", "GST"),
-    QuickLink("PAN Services (Protean)", "New PAN, reprint & status",
-              "https://www.onlineservices.nsdl.com/paam/endUserRegisterContact.html", "PAN"),
-    QuickLink("Refund Status (NSDL)", "Track tax refund dispatch",
-              "https://tin.tin.nsdl.com/oltas/refund-status-pan.html", "Refund"),
+    QuickLink("PAN Services (Protean)", "New PAN, correction & reprint",
+              "https://onlineservices.proteantech.in/paam/endUserRegisterContact.html", "PAN"),
+    QuickLink("Know Refund Status", "Track income tax refund online",
+              "https://eportal.incometax.gov.in/iec/foservices/#/pre-login/know-your-refund-status", "Refund"),
 ]
 
 
@@ -53,10 +57,11 @@ def _ay(year_of_due: int) -> str:
 
 
 def upcoming(today: date | None = None, horizon_days: int = 400,
-             overrides: dict | None = None) -> list[Statutory]:
+             overrides: dict | None = None, custom: list | None = None) -> list[Statutory]:
     today = today or date.today()
     overrides = overrides or {}
     items: list[Statutory] = []
+
     for y in (today.year - 1, today.year, today.year + 1):
         fy_label = f"FY {y - 1}-{str(y)[-2:]}"
         defs = [
@@ -88,9 +93,29 @@ def upcoming(today: date | None = None, horizon_days: int = 400,
             else:
                 items.append(Statutory(key=key, due=def_due, default_due=def_due,
                                        title=title, kind=kind))
-    out = [s for s in items if -30 <= (s.due - today).days <= horizon_days]
-    # Keep upcoming (0..horizon) first, plus recently overdue edited dates if any
-    out = [s for s in out if (s.due - today).days >= 0 or s.edited]
+
+    # Include manually added statutory dates
+    for row in (custom or []):
+        try:
+            due = date.fromisoformat(row["due_date"])
+        except (ValueError, TypeError):
+            continue
+        items.append(Statutory(
+            key=f"custom-{row['id']}",
+            due=due,
+            default_due=due,
+            title=row["title"],
+            kind=row["kind"] or "ITR",
+            edited=False,
+            note=row["note"] or "",
+            custom_id=int(row["id"]),
+        ))
+
+    out = [
+        s for s in items
+        if (-30 <= (s.due - today).days <= horizon_days and ((s.due - today).days >= 0 or s.edited))
+        or (s.custom_id is not None and -60 <= (s.due - today).days <= 730)
+    ]
     out.sort(key=lambda s: (s.due, s.title))
     return out
 

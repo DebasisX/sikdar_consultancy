@@ -16,6 +16,7 @@ from sikdar.context import AppContext
 from sikdar.ui import icons, theme
 from sikdar.ui.brand import app_icon
 from sikdar.ui.main_window import MainWindow
+from sikdar.ui.widgets import PopupPolishFilter
 
 
 def build_stylesheet() -> str:
@@ -40,6 +41,8 @@ def main() -> int:
     font.setPixelSize(13)
     app.setFont(font)
     app.setStyleSheet(build_stylesheet())
+    popup_filter = PopupPolishFilter(app)
+    app.installEventFilter(popup_filter)
 
     ctx = AppContext()
     win = MainWindow(ctx)

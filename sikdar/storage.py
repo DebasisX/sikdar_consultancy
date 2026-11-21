@@ -224,3 +224,29 @@ def human_size(n: int) -> str:
             return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
         size /= 1024
     return f"{n} B"
+
+
+def copy_files_to_clipboard(file_paths: list[Path]) -> None:
+    """Copy local file paths onto the OS clipboard so Ctrl+V attaches them in Gmail/Outlook."""
+    from PySide6.QtCore import QMimeData, QUrl
+    from PySide6.QtGui import QGuiApplication
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(Path(p).resolve())) for p in file_paths if Path(p).exists()])
+    QGuiApplication.clipboard().setMimeData(mime)
+
+
+def open_email_draft(to_email: str, subject: str, body: str, via: str = "mailto") -> None:
+    """Open a pre-addressed email compose window (default Mail app or Gmail Web)."""
+    from urllib.parse import quote
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+
+    to_q = quote(to_email.strip())
+    su_q = quote(subject)
+    bd_q = quote(body)
+    if via == "gmail":
+        url = f"https://mail.google.com/mail/?view=cm&fs=1&to={to_q}&su={su_q}&body={bd_q}"
+    else:
+        url = f"mailto:{to_q}?subject={su_q}&body={bd_q}"
+    QDesktopServices.openUrl(QUrl(url))

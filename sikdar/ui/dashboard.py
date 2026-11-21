@@ -219,8 +219,11 @@ class Dashboard(QWidget):
                 continue
             sub = t["client_name"] or "General task"
             items.append((d, t["title"], sub, "task", t["id"]))
-        for s in deadlines.upcoming(today, 75, db.statutory_overrides()):
-            sub = "Statutory due date (edited)" if s.edited else "Statutory due date"
+        for s in deadlines.upcoming(today, 75, db.statutory_overrides(), db.list_custom_statutory()):
+            if s.custom_id is not None:
+                sub = f"Manual statutory date ({s.kind})"
+            else:
+                sub = "Statutory due date (edited)" if s.edited else "Statutory due date"
             items.append((s.due, s.title, sub, "stat", None))
         items.sort(key=lambda x: x[0])
         for d, title, sub, kind, tid in items[:6]:

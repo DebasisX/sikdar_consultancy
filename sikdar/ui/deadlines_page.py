@@ -73,39 +73,73 @@ class TaskDialog(BaseDialog):
 
 
 class EditStatutoryDialog(BaseDialog):
-    """Edit / extend a statutory due date or reset it to the standard date."""
+    """Add a manual statutory date, edit/delete a manual one, or edit/reset a standard date."""
 
-    def __init__(self, parent, item: deadlines.Statutory):
-        super().__init__(parent, "Edit statutory due date", 480)
+    def __init__(self, parent, item: deadlines.Statutory | None = None):
+        is_new = item is None
+        is_custom = (item is None) or (item.custom_id is not None)
+        title_str = (
+            "Add manual statutory date" if is_new
+            else ("Edit manual statutory date" if is_custom else "Edit statutory due date")
+        )
+        super().__init__(parent, title_str, 490)
         self.item = item
+        self.is_custom = is_custom
         self.reset_requested = False
-        lay = vbox(self, (26, 24, 26, 22), 14)
-        lay.addWidget(label("Edit statutory due date", "h2"))
-        lay.addWidget(label(
-            f"Standard date: {item.default_due.strftime('%d %b %Y')}. "
-            "Update when CBDT announces an extension.", "sub", wrap=True))
+        self.delete_requested = False
 
-        self.title = QLineEdit(item.title)
+        lay = vbox(self, (26, 24, 26, 22), 14)
+        lay.addWidget(label(title_str, "h2"))
+        if is_new:
+            lay.addWidget(label(
+                "Add a custom statutory deadline (e.g. GSTR-1, GSTR-3B, GST Annual Return, or CBDT notification).",
+                "sub", wrap=True))
+        elif is_custom:
+            lay.addWidget(label("Update or remove this manual statutory deadline.", "sub", wrap=True))
+        else:
+            lay.addWidget(label(
+                f"Standard date: {item.default_due.strftime('%d %b %Y')}. "
+                "Update when CBDT announces an extension.", "sub", wrap=True))
+
+        self.title = QLineEdit(item.title if item else "")
+        self.title.setPlaceholderText("e.g. GSTR-3B Monthly Return / Form 10B Audit")
         self.due = clean_date_edit()
-        self.due.setDate(QDate(item.due.year, item.due.month, item.due.day))
-        self.note = QLineEdit(item.note)
-        self.note.setPlaceholderText("e.g. Extended via CBDT Circular No. 12/2026")
+        if item:
+            self.due.setDate(QDate(item.due.year, item.due.month, item.due.day))
+        else:
+            self.due.setDate(QDate.currentDate().addDays(15))
+        self.kind = QComboBox()
+        self.kind.addItems(deadlines.STATUTORY_KINDS)
+        if item and item.kind in deadlines.STATUTORY_KINDS:
+            self.kind.setCurrentText(item.kind)
+        self.note = QLineEdit(item.note if item else "")
+        self.note.setPlaceholderText("e.g. Extended via CBDT Circular / GST Notification")
 
         self.f_title = Field("Obligation", self.title, True)
         lay.addWidget(self.f_title)
-        lay.addWidget(Field("Due date", self.due, True))
-        lay.addWidget(Field("Extension / note (optional)", self.note))
+        if is_custom:
+            r1 = hbox(spacing=14)
+            r1.addWidget(Field("Due date", self.due, True), 1)
+            r1.addWidget(Field("Category", self.kind), 1)
+            lay.addLayout(r1)
+        else:
+            lay.addWidget(Field("Due date", self.due, True))
+        lay.addWidget(Field("Note / Circular reference (optional)", self.note))
 
         lay.addSpacing(6)
         foot = hbox(spacing=10)
-        if item.edited:
+        if item and item.custom_id is not None:
+            b_del = button("Delete", "trash", "danger", small=True)
+            b_del.clicked.connect(self._delete)
+            foot.addWidget(b_del)
+        elif item and item.edited:
             b_reset = button("Reset to standard", "rotate-ccw", "ghost", small=True)
             b_reset.clicked.connect(self._reset)
             foot.addWidget(b_reset)
         foot.addStretch(1)
         c = button("Cancel")
         c.clicked.connect(self.reject)
-        ok = button("Save date", kind="primary")
+        ok = button("Add date" if is_new else "Save date", "check", "primary")
         ok.setDefault(True)
         ok.clicked.connect(self._ok)
         foot.addWidget(c)
@@ -116,14 +150,23 @@ class EditStatutoryDialog(BaseDialog):
         self.reset_requested = True
         self.accept()
 
+    def _delete(self) -> None:
+        self.delete_requested = True
+        self.accept()
+
     def _ok(self) -> None:
         if not self.title.text().strip():
             self.f_title.set_error("Obligation title cannot be empty")
             return
         self.accept()
 
-    def values(self) -> tuple[str, str, str]:
-        return (self.due.date().toString(Qt.ISODate), self.title.text().strip(), self.note.text().strip())
+    def values(self) -> tuple[str, str, str, str]:
+        return (
+            self.due.date().toString(Qt.ISODate),
+            self.title.text().strip(),
+            self.kind.currentText(),
+            self.note.text().strip(),
+        )
 
 
 class DeadlinesPage(QWidget):
@@ -140,7 +183,7 @@ class DeadlinesPage(QWidget):
         b_cal = button("CBDT Calendar", "external-link")
         b_cal.setToolTip("Open official Income Tax India tax calendar in browser")
         b_cal.clicked.connect(lambda: QDesktopServices.openUrl(
-            QUrl("https://incometaxindia.gov.in/Pages/deadline.aspx")))
+            QUrl("https://www.incometaxindia.gov.in/en/tax-calendar")))
         b = button("New task", "plus", "primary")
         b.clicked.connect(self.add_task)
         self.header.add_action(b_cal)
@@ -180,24 +223,30 @@ class DeadlinesPage(QWidget):
         hh.setSectionResizeMode(4, QHeaderView.Fixed)
         self.tasks.setColumnWidth(4, 84)
         hh.setSectionResizeMode(5, QHeaderView.Fixed)
-        self.tasks.setColumnWidth(5, 106)
+        self.tasks.setColumnWidth(5, 112)
         self.tasks.cellClicked.connect(self._task_clicked)
         self.tasks.cellDoubleClicked.connect(lambda r, c: self.edit_task(r) if c not in (0, 5) else None)
         self.tasks.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tasks.customContextMenuRequested.connect(self._task_menu)
-        tl.addWidget(self.tasks)
+        tl.addWidget(self.tasks, 1)
         self.tasks_empty = empty_state("check-circle", "No tasks", "Add a task to keep track of client work.")
-        tl.addWidget(self.tasks_empty)
+        tl.addWidget(self.tasks_empty, 1)
         self.tasks_card.setMinimumWidth(320)
         row.addWidget(self.tasks_card)
 
         # statutory
         self.stat_card = card()
         sl = vbox(self.stat_card, (8, 0, 8, 10))
-        sh = vbox(spacing=2)
-        sh.setContentsMargins(24, 20, 24, 14)
-        sh.addWidget(label("Statutory calendar", "h2"))
-        sh.addWidget(label("Double-click or right-click any row to edit or extend a date", "muted"))
+        sh = hbox(spacing=10)
+        sh.setContentsMargins(16, 20, 16, 14)
+        scol = vbox(spacing=2)
+        scol.addWidget(label("Statutory calendar", "h2"))
+        scol.addWidget(label("Double-click to edit or add your own", "muted", wrap=True))
+        sh.addLayout(scol, 1)
+        b_add_stat = button("Add date", "plus", small=True)
+        b_add_stat.setToolTip("Add a manual statutory deadline (ITR, GST, TDS, etc.)")
+        b_add_stat.clicked.connect(self.add_statutory)
+        sh.addWidget(b_add_stat, 0, Qt.AlignVCenter)
         shw = QWidget()
         shw.setLayout(sh)
         sl.addWidget(shw)
@@ -215,7 +264,7 @@ class DeadlinesPage(QWidget):
         self.stat.cellDoubleClicked.connect(lambda r, _c: self.edit_statutory(r))
         self.stat.setContextMenuPolicy(Qt.CustomContextMenu)
         self.stat.customContextMenuRequested.connect(self._stat_menu)
-        sl.addWidget(self.stat)
+        sl.addWidget(self.stat, 1)
         self.stat_card.setMinimumWidth(300)
         row.addWidget(self.stat_card)
         row.setStretchFactor(0, 3)
@@ -276,9 +325,11 @@ class DeadlinesPage(QWidget):
             al = hbox(act_wrap, (4, 0, 8, 0), 0)
             if done:
                 btn = button("Undo", "rotate-ccw", "undo", small=True)
+                btn.setMinimumWidth(84)
                 btn.setToolTip("Reopen this task")
             else:
-                btn = button("Done", "check", "done", small=True, icon_color="#047857")
+                btn = button("Done", "check", "done", small=True)
+                btn.setMinimumWidth(84)
                 btn.setToolTip("Tick off task as completed")
             btn.clicked.connect(lambda _=False, tid=t["id"]: self._toggle_task(tid))
             al.addWidget(btn, 0, Qt.AlignVCenter | Qt.AlignRight)
@@ -290,20 +341,29 @@ class DeadlinesPage(QWidget):
         self.tasks_empty.setVisible(not rows)
 
         overrides = self.ctx.db.statutory_overrides()
-        stats = deadlines.upcoming(today, 240, overrides)[:14]
+        custom = self.ctx.db.list_custom_statutory()
+        stats = deadlines.upcoming(today, 240, overrides, custom)[:20]
         self._stat_items = stats
         self.stat.setRowCount(len(stats))
         for r, s in enumerate(stats):
             dt_text = s.due.strftime("%d %b %Y")
-            dt_item = QTableWidgetItem(dt_text + ("\n(Edited)" if s.edited else ""))
-            if s.edited:
+            tag = "\n(Manual)" if s.custom_id is not None else ("\n(Edited)" if s.edited else "")
+            dt_item = QTableWidgetItem(dt_text + tag)
+            if s.edited or s.custom_id is not None:
                 dt_item.setForeground(QColor(theme.TEXT))
                 f = dt_item.font()
                 f.setWeight(f.Weight.DemiBold)
                 dt_item.setFont(f)
-            title_text = s.title + (f"\nNote: {s.note}" if s.note else "")
+            prefix = f"[{s.kind}] " if s.custom_id is not None else ""
+            title_text = prefix + s.title + (f"\nNote: {s.note}" if s.note else "")
             title_item = QTableWidgetItem(title_text)
-            if s.edited:
+            if s.custom_id is not None:
+                tip = f"Manual statutory deadline ({s.kind})"
+                if s.note:
+                    tip += f"\nNote: {s.note}"
+                dt_item.setToolTip(tip)
+                title_item.setToolTip(tip)
+            elif s.edited:
                 tip = f"Standard date: {s.default_due.strftime('%d %b %Y')}"
                 if s.note:
                     tip += f"\nNote: {s.note}"
@@ -324,21 +384,42 @@ class DeadlinesPage(QWidget):
             self.stat.setRowHeight(r, max(54, self.stat.rowHeight(r) + 10))
 
     # ------------------------------------------------- statutory editing
+    def add_statutory(self) -> None:
+        d = EditStatutoryDialog(self.window(), None)
+        if d.exec() == QDialog.Accepted:
+            due_iso, title, kind, note = d.values()
+            self.ctx.db.add_custom_statutory(title, due_iso, kind, note)
+            self.ctx.db.log(f"Added manual statutory date: {title} ({due_iso})")
+            self.refresh()
+            self.data_changed.emit()
+            self.toast.emit("Manual statutory date added", "success")
+
     def edit_statutory(self, row: int) -> None:
         if row < 0 or row >= len(self._stat_items):
             return
         item = self._stat_items[row]
         d = EditStatutoryDialog(self.window(), item)
         if d.exec() == QDialog.Accepted:
-            if d.reset_requested:
-                self.ctx.db.clear_statutory_override(item.key)
-                self.ctx.db.log(f"Reset statutory date: {item.title}")
-                self.toast.emit("Statutory date reset to standard", "success")
+            if item.custom_id is not None:
+                if d.delete_requested:
+                    self.ctx.db.delete_custom_statutory(item.custom_id)
+                    self.ctx.db.log(f"Deleted manual statutory date: {item.title}")
+                    self.toast.emit("Manual statutory date deleted", "success")
+                else:
+                    due_iso, title, kind, note = d.values()
+                    self.ctx.db.update_custom_statutory(item.custom_id, title, due_iso, kind, note)
+                    self.ctx.db.log(f"Updated manual statutory date: {title} -> {due_iso}")
+                    self.toast.emit("Manual statutory date updated", "success")
             else:
-                due_iso, title, note = d.values()
-                self.ctx.db.set_statutory_override(item.key, due_iso, title, note)
-                self.ctx.db.log(f"Updated statutory date: {title} -> {due_iso}")
-                self.toast.emit("Statutory due date updated", "success")
+                if d.reset_requested:
+                    self.ctx.db.clear_statutory_override(item.key)
+                    self.ctx.db.log(f"Reset statutory date: {item.title}")
+                    self.toast.emit("Statutory date reset to standard", "success")
+                else:
+                    due_iso, title, _kind, note = d.values()
+                    self.ctx.db.set_statutory_override(item.key, due_iso, title, note)
+                    self.ctx.db.log(f"Updated statutory date: {title} -> {due_iso}")
+                    self.toast.emit("Statutory due date updated", "success")
             self.refresh()
             self.data_changed.emit()
 
@@ -349,13 +430,27 @@ class DeadlinesPage(QWidget):
         self.stat.selectRow(idx.row())
         item = self._stat_items[idx.row()]
         m = QMenu(self)
-        a_edit = m.addAction(icons.icon("edit", theme.TEXT_2, 16), "Edit / extend due date")
-        a_reset = None
-        if item.edited:
+        a_edit = m.addAction(
+            icons.icon("edit", theme.TEXT_2, 16),
+            "Edit manual date" if item.custom_id is not None else "Edit / extend due date",
+        )
+        a_del = a_reset = None
+        if item.custom_id is not None:
+            m.addSeparator()
+            a_del = m.addAction(icons.icon("trash", theme.DANGER, 16), "Delete manual date")
+        elif item.edited:
             a_reset = m.addAction(icons.icon("rotate-ccw", theme.TEXT_2, 16), "Reset to standard date")
         act = m.exec(self.stat.viewport().mapToGlobal(pos))
         if act == a_edit:
             self.edit_statutory(idx.row())
+        elif a_del and act == a_del:
+            if confirm(self.window(), "Delete manual statutory date?",
+                       f"Remove '{item.title}' from the statutory calendar?", "Delete", danger=True):
+                self.ctx.db.delete_custom_statutory(item.custom_id)
+                self.ctx.db.log(f"Deleted manual statutory date: {item.title}")
+                self.refresh()
+                self.data_changed.emit()
+                self.toast.emit("Manual statutory date deleted", "success")
         elif a_reset and act == a_reset:
             self.ctx.db.clear_statutory_override(item.key)
             self.ctx.db.log(f"Reset statutory date: {item.title}")
